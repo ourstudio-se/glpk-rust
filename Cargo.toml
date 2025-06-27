@@ -2,6 +2,11 @@
 name = "glpk-rust"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0"
+description = "Rust wrapper for GLPK (GNU Linear Programming Kit) with static linking"
+repository = "https://github.com/ourstudio-se/glpk-rust"
+keywords = ["optimization", "linear-programming", "glpk", "integer-programming"]
+categories = ["mathematics", "science"]
 
 [dependencies]
 libc = "0.2"

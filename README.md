@@ -9,6 +9,21 @@ A Rust wrapper for the GNU Linear Programming Kit (GLPK) for solving Integer Lin
 - **Zero runtime dependencies**: Everything is statically linked
 - **Safe Rust API**: High-level, memory-safe interface to GLPK
 
+## License
+
+This library is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
+
+**Important**: Since this library statically links with GLPK (which is GPL-3.0 licensed), any software that uses this library must also be licensed under GPL-3.0 or a compatible license. This means:
+
+- ✅ Your project can use this library if it's open source under GPL-3.0
+- ✅ You can use it in other GPL-compatible open source projects
+- ❌ You cannot use this library in proprietary/closed-source software
+- ❌ You cannot use this library in projects with incompatible licenses (MIT, Apache, etc.)
+
+If you need to use GLPK in a non-GPL project, you'll need to either:
+1. Purchase a commercial license from the GLPK authors, or
+2. Use a different solver with a more permissive license
+
 ## Prerequisites
 
 Only standard build tools are required:
