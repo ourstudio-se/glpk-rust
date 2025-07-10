@@ -53,8 +53,8 @@ use std::collections::HashMap;
 
 // Create variables
 let variables = vec![
-    Variable { id: "x1".to_string(), bound: (0, 5) },
-    Variable { id: "x2".to_string(), bound: (0, 3) },
+    Variable { id: "x1", bound: (0, 5) },
+    Variable { id: "x2", bound: (0, 3) },
 ];
 
 // Define constraints
@@ -72,8 +72,8 @@ let mut polytope = SparseLEIntegerPolyhedron {
 
 // Define objective
 let mut objective = HashMap::new();
-objective.insert("x1".to_string(), 1.0);
-objective.insert("x2".to_string(), 1.0);
+objective.insert("x1", 1.0);
+objective.insert("x2", 1.0);
 
 // Solve
 let solutions = solve_ilps(&mut polytope, vec![objective], false, false);
