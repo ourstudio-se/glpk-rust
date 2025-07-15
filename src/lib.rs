@@ -226,8 +226,14 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
                 glpk::glp_set_col_bnds(lp, (i + 1) as i32, 4, var.bound.0 as f64, var.bound.1 as f64);
             }
 
-            // Set col kind - either integer (3) or binary (2) in this case
-            if (var.bound.0 == 0 && var.bound.1 == 1) || (var.bound.0 == 1 && var.bound.1 == 1) || (var.bound.0 == 0 && var.bound.1 == 0) {
+            // Set col kind - use binary variables for efficiency, except for fixed variables
+            // GLPK binary variables ignore bounds and allow both 0 and 1, so fixed variables
+            // with bounds (0,0) or (1,1) must be integer to respect the bounds properly
+            if var.bound.0 == var.bound.1 {
+                // Fixed variables must be integer to respect exact bounds
+                glpk::glp_set_col_kind(lp, (i + 1) as i32, glp_consts::GLP_IV);
+            } else if (var.bound.0 == 0 || var.bound.0 == 1) && (var.bound.1 == 0 || var.bound.1 == 1) {
+                // Non-fixed variables with bounds in {0,1} can be binary for efficiency
                 glpk::glp_set_col_kind(lp, (i + 1) as i32, glp_consts::GLP_BV);
             } else {
                 glpk::glp_set_col_kind(lp, (i + 1) as i32, glp_consts::GLP_IV);
@@ -883,5 +889,48 @@ mod tests {
         
         let objectives = vec![HashMap::new()];
         solve_ilps(&mut polytope, objectives, false, false);
+    }
+
+    #[test]
+    fn test_fixed_boolean_variables() {
+        // Test that boolean variables can be fixed to specific values
+        // Using bounds that won't be classified as binary to avoid GLPK binary variable behavior
+        let variables = vec![
+            Variable { id: "fixed_zero", bound: (0, 0) },
+            Variable { id: "fixed_one", bound: (1, 1) },
+            Variable { id: "free_binary", bound: (0, 1) },
+        ];
+        
+        let mut polytope = SparseLEIntegerPolyhedron {
+            A: IntegerSparseMatrix {
+                rows: vec![0, 0, 0],
+                cols: vec![0, 1, 2],
+                vals: vec![1, 1, 1],
+            },
+            b: vec![(0, 10)],
+            variables,
+            double_bound: false,
+        };
+        
+        let mut objective = HashMap::new();
+        objective.insert("fixed_zero", 1.0);
+        objective.insert("fixed_one", 1.0);
+        objective.insert("free_binary", 1.0);
+        let objectives = vec![objective];
+        
+        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        
+        assert_eq!(solutions.len(), 1);
+        assert_eq!(solutions[0].status, Status::Optimal);
+        
+        // Fixed to 0 should remain 0 even when classified as binary
+        assert_eq!(solutions[0].solution.get("fixed_zero"), Some(&0));
+        
+        // Fixed to 1 should remain 1 even when classified as binary
+        assert_eq!(solutions[0].solution.get("fixed_one"), Some(&1));
+        
+        // Free binary variable should be able to take value 0 or 1
+        // With maximization, it should be 1
+        assert_eq!(solutions[0].solution.get("free_binary"), Some(&1));
     }
 }
