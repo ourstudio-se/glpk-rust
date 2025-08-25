@@ -723,6 +723,40 @@ mod tests {
     }
 
     #[test]
+    fn test_json_data_polyhedron() {
+        let variables = vec![
+            Variable { id: "a", bound: (0, 1) },
+            Variable { id: "b", bound: (0, 1) },
+            Variable { id: "18a7bec7bbb9fe127d6107f77af0f11b24a6a846", bound: (0, 1) },
+        ];
+        
+        let mut polytope = SparseLEIntegerPolyhedron {
+            A: IntegerSparseMatrix {
+                rows: vec![0, 0, 0, 1, 1, 1, 2],
+                cols: vec![0, 1, 2, 0, 1, 2, 2],
+                vals: vec![-1, -1, 2, 1, 1, -2, -1],
+            },
+            b: vec![(0, 1), (0, 0), (0, -1)],
+            variables,
+            double_bound: false,
+        };
+        
+        let mut objective = HashMap::new();
+        objective.insert("a", 1.0);
+        objective.insert("b", -1.0);
+        let objectives = vec![objective];
+        
+        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        
+        assert_eq!(solutions.len(), 1);
+        let solution = &solutions[0];
+        assert_eq!(solution.status, Status::Optimal);
+        assert_eq!(solution.objective, 1);
+        assert_eq!(solution.solution.get("a"), Some(&1));
+        assert_eq!(solution.solution.get("b"), Some(&0));
+    }
+
+    #[test]
     fn test_complex_constraint_system() {
         let variables = vec![
             Variable { id: "x1", bound: (0, 10) },
