@@ -12,6 +12,7 @@ mod glpk {
 
 use libc::c_int;
 use std::collections::HashMap;
+use std::fmt;
 
 pub type Bound = (i32, i32);
 pub type ID<'a> = &'a str;
@@ -61,25 +62,66 @@ pub enum Status {
     EmptySpace = 9,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub struct Variable<'a> {
     pub id: ID<'a>,
     pub bound: Bound,
 }
 
 
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub struct IntegerSparseMatrix {
     pub rows: Vec<i32>,
     pub cols: Vec<i32>,
     pub vals: Vec<i32>,
 }
 
+#[derive(Hash)]
 pub struct SparseLEIntegerPolyhedron<'a> {
     pub A: IntegerSparseMatrix,
     pub b: Vec<Bound>,
     pub variables: Vec<Variable<'a>>,
     pub double_bound: bool,
+}
+
+impl<'a> SparseLEIntegerPolyhedron<'a> {
+    pub fn get_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        let hash = hasher.finish();
+        hash
+    }
+}
+
+impl fmt::Display for SparseLEIntegerPolyhedron<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let space = 4;
+        let nr_rows = self.A.rows.iter().max().unwrap_or(&0) + 1;
+        let nr_cols = self.A.cols.iter().max().unwrap_or(&0) + 1;
+        // Create 2d array of zeroes
+        let mut matrix = vec![vec![0; nr_cols as usize]; nr_rows as usize];
+        for ((r, c), v) in self.A.rows.iter().zip(self.A.cols.iter()).zip(self.A.vals.iter()) {
+            matrix[*r as usize][*c as usize] = *v;
+        }
+        for variable in &self.variables {
+            write!(f, "{:>space$}", &variable.id.chars().take(3).collect::<String>())?;
+        }
+        writeln!(f)?;
+        for (idx, row) in matrix.iter().enumerate() {
+            if self.double_bound {
+                write!(f, "{:>space$} <= ", self.b[idx].0)?;
+            }
+            for val in row.iter() {
+                write!(f, "{:>space$}", val)?;
+            }
+            write!(f, " <= {:>space$}", self.b[idx].1)?;
+            writeln!(f)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -211,7 +253,7 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
         // Add constraints (rows)
         glpk::glp_add_rows(lp, polytope.b.len() as i32);
         for (i, &b) in polytope.b.iter().enumerate() {
-            let double_bound = if polytope.double_bound { 4 } else { 3 };
+            let double_bound = if polytope.double_bound { glp_consts::GLP_DB } else { glp_consts::GLP_UP };
             glpk::glp_set_row_bnds(lp, (i + 1) as i32, double_bound, b.0 as f64, b.1 as f64);
         }
 
@@ -221,23 +263,15 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
             
             // Set col bounds
             if var.bound.0 == var.bound.1 {
-                glpk::glp_set_col_bnds(lp, (i + 1) as i32, 5, var.bound.0 as f64, var.bound.1 as f64);
+                glpk::glp_set_col_bnds(lp, (i + 1) as i32, glp_consts::GLP_FX, var.bound.0 as f64, var.bound.1 as f64);
             } else {
-                glpk::glp_set_col_bnds(lp, (i + 1) as i32, 4, var.bound.0 as f64, var.bound.1 as f64);
+                glpk::glp_set_col_bnds(lp, (i + 1) as i32, glp_consts::GLP_DB, var.bound.0 as f64, var.bound.1 as f64);
             }
 
-            // Set col kind - use binary variables for efficiency, except for fixed variables
-            // GLPK binary variables ignore bounds and allow both 0 and 1, so fixed variables
-            // with bounds (0,0) or (1,1) must be integer to respect the bounds properly
-            if var.bound.0 == var.bound.1 {
-                // Fixed variables must be integer to respect exact bounds
-                glpk::glp_set_col_kind(lp, (i + 1) as i32, glp_consts::GLP_IV);
-            } else if (var.bound.0 == 0 || var.bound.0 == 1) && (var.bound.1 == 0 || var.bound.1 == 1) {
-                // Non-fixed variables with bounds in {0,1} can be binary for efficiency
-                glpk::glp_set_col_kind(lp, (i + 1) as i32, glp_consts::GLP_BV);
-            } else {
-                glpk::glp_set_col_kind(lp, (i + 1) as i32, glp_consts::GLP_IV);
-            };
+            // Set col kind - always integer variables
+            // From GLPK docs: "Setting a column to GLP_BV has the same effect as if it were set to GLP_IV, its lower bound were
+            // set 0, and its upper bound were set to 1."
+            glpk::glp_set_col_kind(lp, (i + 1) as i32, glp_consts::GLP_IV);
         }
 
         // Set the constraint matrix
@@ -966,5 +1000,39 @@ mod tests {
         // Free binary variable should be able to take value 0 or 1
         // With maximization, it should be 1
         assert_eq!(solutions[0].solution.get("free_binary"), Some(&1));
+    }
+
+    #[test]
+    fn test_atmost_one_of_constraints_with_bounds_fixed_in_variables() {
+        // 0 <= [  1,   1,   1,   3] <=   4
+        // 0 <= [ -1,  -1,  -1,  -5] <=  -2
+        let variables = vec![
+            Variable { id: "a", bound: (0, 1) },
+            Variable { id: "b", bound: (0, 1) },
+            Variable { id: "c", bound: (0, 1) },
+            Variable { id: "A", bound: (1, 1) } // Fixed to 1 means at most one of a,b,c can be 1
+        ];
+
+        let mut polytope = SparseLEIntegerPolyhedron {
+            A: IntegerSparseMatrix {
+                rows: vec![0, 0, 0, 0, 1, 1, 1, 1],
+                cols: vec![3, 0, 1, 2, 3, 0, 1, 2],
+                vals: vec![3, 1, 1, 1, -5, -1, -1, -1],
+            },
+            b: vec![(0, 4), (0, -2)],
+            variables,
+            double_bound: false,
+        };
+
+        // Try to take a b and c
+        let objective = HashMap::from([("b", 1.0), ("a", 1.0), ("c", 1.0)]);
+        let objectives = vec![objective];
+        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        assert_eq!(solutions.len(), 1);
+        assert_eq!(solutions[0].status, Status::Optimal);
+
+        // Check that at most one of a,b,c is 1
+        let sum_abc = solutions[0].solution.get("a").unwrap() + solutions[0].solution.get("b").unwrap() + solutions[0].solution.get("c").unwrap();
+        assert!(sum_abc <= 1);
     }
 }
