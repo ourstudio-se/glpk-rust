@@ -1,6 +1,6 @@
 [package]
 name = "glpk-rust"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 license = "GPL-3.0"
 description = "Rust wrapper for GLPK (GNU Linear Programming Kit) with static linking"
