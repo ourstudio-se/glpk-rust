@@ -58,7 +58,7 @@ fn try_system_glpk() -> bool {
                     "/opt/homebrew/lib/pkgconfig",  // Apple Silicon
                     "/usr/local/lib/pkgconfig",     // Intel Mac
                 ];
-                
+
                 for path in &homebrew_paths {
                     if std::path::Path::new(path).join("glpk.pc").exists() {
                         // Update PKG_CONFIG_PATH with current path + homebrew path
@@ -69,7 +69,7 @@ fn try_system_glpk() -> bool {
                             format!("{}:{}", current_path, path)
                         };
                         std::env::set_var("PKG_CONFIG_PATH", &new_path);
-                        
+
                         if let Ok(library) = pkg_config::Config::new().probe("glpk") {
                             for lib_path in &library.link_paths {
                                 println!("cargo:rustc-link-search=native={}", lib_path.display());
@@ -81,13 +81,13 @@ fn try_system_glpk() -> bool {
                         }
                     }
                 }
-                
+
                 // Also try direct library detection if pkg-config fails
                 let homebrew_lib_paths = [
                     "/opt/homebrew/lib",  // Apple Silicon
                     "/usr/local/lib",     // Intel Mac
                 ];
-                
+
                 for lib_path in &homebrew_lib_paths {
                     let glpk_lib = std::path::Path::new(lib_path).join("libglpk.dylib");
                     if glpk_lib.exists() {
@@ -98,9 +98,29 @@ fn try_system_glpk() -> bool {
                     }
                 }
             }
+
+            // Try direct library detection on Linux if pkg-config fails
+            if std::env::consts::OS == "linux" {
+                let linux_lib_paths = [
+                    "/usr/lib/x86_64-linux-gnu",  // Ubuntu/Debian x64
+                    "/usr/lib/aarch64-linux-gnu", // Ubuntu/Debian ARM64
+                    "/usr/lib64",                  // RedHat/CentOS
+                    "/usr/lib",                    // Generic
+                ];
+
+                for lib_path in &linux_lib_paths {
+                    let glpk_lib = std::path::Path::new(lib_path).join("libglpk.so");
+                    if glpk_lib.exists() {
+                        println!("cargo:rustc-link-search=native={}", lib_path);
+                        println!("cargo:rustc-link-lib=glpk");
+                        println!("cargo:warning=Found GLPK library at {}", glpk_lib.display());
+                        return true;
+                    }
+                }
+            }
         }
     }
-    
+
     false
 }
 
