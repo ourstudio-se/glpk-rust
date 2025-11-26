@@ -14,6 +14,19 @@ use libc::c_int;
 use std::collections::HashMap;
 use std::fmt;
 
+// Extra GLPK functions that your current bindings don't expose
+extern "C" {
+    pub fn glp_get_num_rows(P: *mut glpk::glp_prob) -> c_int;
+
+    pub fn glp_set_mat_row(
+        P: *mut glpk::glp_prob,
+        i: c_int,           // row index
+        n: c_int,           // number of non-zeros
+        ind: *const c_int,  // column indices [1..n]
+        val: *const f64,    // values [1..n]
+    );
+}
+
 pub type Bound = (i32, i32);
 pub type ID<'a> = &'a str;
 pub type Objective<'a> = HashMap<ID<'a>, f64>;
@@ -364,9 +377,494 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
     }
 }
 
+
+unsafe fn add_no_good_cut_for_binary_solution(
+    lp: *mut glpk::glp_prob,
+    x_vals: &[i32], // 0/1 for each column j+1
+) {
+    use crate::glp_consts::GLP_LO;
+    use libc::c_int;
+
+    let ncols = x_vals.len() as c_int;
+
+    // Count ones in current solution
+    let ones_count = x_vals.iter().filter(|&&v| v == 1).count() as f64;
+
+    // New row = current number of rows + 1
+    let new_row = glp_get_num_rows(lp) + 1;
+
+    // Physically add that row
+    glpk::glp_add_rows(lp, 1);
+
+    // Set row bounds: row >= rhs
+    let rhs = 1.0 - ones_count;
+    glpk::glp_set_row_bnds(lp, new_row, GLP_LO, rhs, 0.0);
+
+    // Inequality:
+    //   sum_{j: x*_j = 0}  (+1) * x_j
+    // + sum_{j: x*_j = 1}  (-1) * x_j >= 1 - ones_count
+    //
+    // Coeffs:
+    //   coef_j = +1 if x*_j = 0
+    //   coef_j = -1 if x*_j = 1
+
+    // GLPK wants 1-based arrays; index 0 is dummy
+    let mut ind: Vec<c_int> = Vec::with_capacity(ncols as usize + 1);
+    let mut val: Vec<f64>   = Vec::with_capacity(ncols as usize + 1);
+
+    ind.push(0);
+    val.push(0.0);
+
+    let mut nz: c_int = 0;
+
+    for (j, &xj) in x_vals.iter().enumerate() {
+        nz += 1;
+        ind.push((j + 1) as c_int);                // column index (1-based)
+        val.push(if xj == 1 { -1.0 } else { 1.0 }); // coefficient
+    }
+
+    glp_set_mat_row(lp, new_row, nz, ind.as_ptr(), val.as_ptr());
+}
+
+/// Enumerate up to `k` distinct ILP solutions for a single objective using no-good cuts.
+///
+/// IMPORTANT:
+/// - This function **only supports boolean (0/1) variables**.
+/// - It will `panic!` if any variable has bounds outside [0, 1].
+///
+/// Behaviour:
+/// - Build a GLPK model from `polytope`.
+/// - Repeatedly solve it, each time adding a no-good cut that forbids the
+///   current 0/1 assignment.
+/// - Stop when either:
+///   * no more feasible solution exists, or
+///   * `k` solutions have been found.
+///
+/// All solutions are returned in one flat `Vec<Solution>`.
+pub fn solve_ilps_k_best<'a>(
+    polytope: &SparseLEIntegerPolyhedron<'a>,
+    objective: Objective<'a>,
+    maximize: bool,
+    term_out: bool,
+    k: usize,
+) -> Vec<Solution> {
+    use crate::glp_consts;
+    use libc::c_int;
+
+    let mut solutions: Vec<Solution> = Vec::new();
+
+    // Basic structural checks (same as in solve_ilps)
+    let n_cols = polytope.variables.len();
+
+    if polytope.A.rows.is_empty() || polytope.A.cols.is_empty() {
+        panic!("The constraint matrix A cannot be empty, at the moment. This will be supported in future versions.");
+    }
+
+    let poly_n_cols = (*polytope.A.cols.iter().max().unwrap() + 1) as usize;
+    if n_cols < poly_n_cols {
+        panic!(
+            "The number of variables must be at least as large as the maximum column index in the constraint matrix, got ({},{})",
+            n_cols, poly_n_cols
+        );
+    }
+
+    if (polytope.A.rows.len() != polytope.A.cols.len())
+        || (polytope.A.rows.len() != polytope.A.vals.len())
+        || (polytope.A.cols.len() != polytope.A.vals.len())
+    {
+        panic!(
+            "Rows, columns and values must have the same length, got ({},{},{})",
+            polytope.A.rows.len(),
+            polytope.A.cols.len(),
+            polytope.A.vals.len()
+        );
+    }
+
+    if polytope.A.rows.iter().max().unwrap() + 1 > polytope.b.len() as i32 {
+        panic!(
+            "The number of elements in b must be at least as large as the maximum row index in the constraint matrix, got ({},{})",
+            polytope.b.len(),
+            polytope.A.rows.iter().max().unwrap() + 1
+        );
+    }
+
+    // EXTRA CHECK: only allow boolean variables (bounds within [0, 1])
+    for var in &polytope.variables {
+        let (lo, hi) = var.bound;
+        if lo < 0 || hi > 1 || lo > hi {
+            panic!(
+                "solve_ilps_k_best only supports boolean variables with bounds in [0, 1]. \
+                 Variable '{}' has bounds ({}, {}).",
+                var.id, lo, hi
+            );
+        }
+    }
+
+    unsafe {
+        // Enable or disable GLPK terminal output
+        glpk::glp_term_out(term_out as c_int);
+
+        // Create problem
+        let lp = glpk::glp_create_prob();
+        let direction = if maximize {
+            glp_consts::GLP_MAX
+        } else {
+            glp_consts::GLP_MIN
+        };
+        glpk::glp_set_obj_dir(lp, direction);
+
+        // Add rows for constraints
+        glpk::glp_add_rows(lp, polytope.b.len() as i32);
+        for (i, &b) in polytope.b.iter().enumerate() {
+            let double_bound = if polytope.double_bound {
+                glp_consts::GLP_DB
+            } else {
+                glp_consts::GLP_UP
+            };
+            glpk::glp_set_row_bnds(
+                lp,
+                (i + 1) as i32,
+                double_bound,
+                b.0 as f64,
+                b.1 as f64,
+            );
+        }
+
+        // Add columns for variables (all boolean)
+        glpk::glp_add_cols(lp, polytope.variables.len() as i32);
+        for (i, var) in polytope.variables.iter().enumerate() {
+            let col_index = (i + 1) as i32;
+            let (lo, hi) = var.bound;
+
+            if lo == hi {
+                glpk::glp_set_col_bnds(
+                    lp,
+                    col_index,
+                    glp_consts::GLP_FX,
+                    lo as f64,
+                    hi as f64,
+                );
+            } else {
+                glpk::glp_set_col_bnds(
+                    lp,
+                    col_index,
+                    glp_consts::GLP_DB,
+                    lo as f64,
+                    hi as f64,
+                );
+            }
+
+            glpk::glp_set_col_kind(lp, col_index, glp_consts::GLP_BV);
+        }
+
+        // Constraint matrix
+        let rows: Vec<i32> = std::iter::once(0)
+            .chain(polytope.A.rows.iter().map(|x| *x + 1))
+            .collect();
+        let cols: Vec<i32> = std::iter::once(0)
+            .chain(polytope.A.cols.iter().map(|x| *x + 1))
+            .collect();
+        let vals_f64: Vec<f64> = std::iter::once(0.0)
+            .chain(polytope.A.vals.iter().map(|x| *x as f64))
+            .collect();
+
+        glpk::glp_load_matrix(
+            lp,
+            (vals_f64.len() - 1) as i32,
+            rows.as_ptr(),
+            cols.as_ptr(),
+            vals_f64.as_ptr(),
+        );
+
+        // Set objective coefficients
+        for (j, v) in polytope.variables.iter().enumerate() {
+            let coef = objective.get(&v.id).unwrap_or(&0.0);
+            glpk::glp_set_obj_coef(lp, (j + 1) as i32, *coef as f64);
+        }
+
+        // k = 0 → no enumeration at all
+        if k == 0 {
+            glpk::glp_delete_prob(lp);
+            return solutions;
+        }
+
+        // Enumerate up to k solutions
+        let mut found = 0usize;
+
+        'enum_loop: loop {
+            if found >= k {
+                break 'enum_loop;
+            }
+
+            let mut mip_params = glpk::glp_iocp::default();
+            glpk::glp_init_iocp(&mut mip_params);
+            mip_params.presolve = 1;
+
+            let mip_ret = glpk::glp_intopt(lp, &mip_params);
+
+            let mut solution = Solution {
+                status: Status::Undefined,
+                objective: 0,
+                solution: HashMap::new(),
+                error: None,
+            };
+
+            if mip_ret != 0 {
+                solution.status = Status::MIPFailed;
+                solution.error = Some(format!("GLPK MIP solver failed with code: {}", mip_ret));
+                solutions.push(solution);
+                break 'enum_loop;
+            }
+
+            let status = glpk::glp_mip_status(lp);
+            match status {
+                2 | 5 => {
+                    // Feasible or optimal
+                    solution.status =
+                        if status == 5 { Status::Optimal } else { Status::Feasible };
+                    solution.objective = glpk::glp_mip_obj_val(lp) as i32;
+
+                    // Extract current 0/1 solution
+                    let mut x_vals: Vec<i32> = Vec::with_capacity(polytope.variables.len());
+                    for (j, var) in polytope.variables.iter().enumerate() {
+                        let x = glpk::glp_mip_col_val(lp, (j + 1) as i32);
+                        let xi = x.round() as i32;
+                        x_vals.push(xi);
+                        solution.solution.insert(var.id.to_string(), xi as i64);
+                    }
+
+                    solutions.push(solution);
+                    found += 1;
+
+                    // Forbid this assignment next time
+                    add_no_good_cut_for_binary_solution(lp, &x_vals);
+                }
+                3 => {
+                    // Infeasible relaxation (no integer solution)
+                    solution.status = Status::Infeasible;
+                    solution.error = Some("Infeasible solution exists".to_string());
+                    if found == 0 {
+                        // Only report if *no* solutions found at all
+                        solutions.push(solution);
+                    }
+                    break 'enum_loop;
+                }
+                4 => {
+                    solution.status = Status::NoFeasible;
+                    solution.error = Some("No feasible solution exists".to_string());
+                    if found == 0 {
+                        solutions.push(solution);
+                    }
+                    break 'enum_loop;
+                }
+                6 => {
+                    solution.status = Status::Unbounded;
+                    solution.error = Some("Problem is unbounded".to_string());
+                    if found == 0 {
+                        solutions.push(solution);
+                    }
+                    break 'enum_loop;
+                }
+                1 => {
+                    solution.status = Status::Undefined;
+                    solution.error = Some("Solution is undefined".to_string());
+                    if found == 0 {
+                        solutions.push(solution);
+                    }
+                    break 'enum_loop;
+                }
+                x => {
+                    panic!("Unknown status when solving ({})", x);
+                }
+            }
+        }
+
+        glpk::glp_delete_prob(lp);
+    }
+
+    solutions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    /// x1, x2 ∈ {0,1}, constraint: x1 + x2 ≤ 1
+    /// Feasible solutions: (0,0), (1,0), (0,1)
+    fn make_two_var_at_most_one<'a>() -> SparseLEIntegerPolyhedron<'a> {
+        let variables = vec![
+            Variable { id: "x1", bound: (0, 1) },
+            Variable { id: "x2", bound: (0, 1) },
+        ];
+
+        let A = IntegerSparseMatrix {
+            rows: vec![0, 0],
+            cols: vec![0, 1],
+            vals: vec![1, 1],
+        };
+
+        // 0 ≤ x1 + x2 ≤ 1
+        let b = vec![(0, 1)];
+
+        SparseLEIntegerPolyhedron {
+            A,
+            b,
+            variables,
+            double_bound: true,
+        }
+    }
+
+    /// x ∈ {0,1}, constraint: x == 2  (infeasible)
+    fn make_infeasible_one_var<'a>() -> SparseLEIntegerPolyhedron<'a> {
+        let variables = vec![
+            Variable { id: "x", bound: (0, 1) }, // x is boolean
+        ];
+
+        let A = IntegerSparseMatrix {
+            rows: vec![0],
+            cols: vec![0],
+            vals: vec![1],
+        };
+
+        // row: 2 ≤ x ≤ 2  -> impossible for x ∈ {0,1}
+        let b = vec![(2, 2)];
+
+        SparseLEIntegerPolyhedron {
+            A,
+            b,
+            variables,
+            double_bound: true,
+        }
+    }
+
+    /// Utility: extract (x1, x2) pair from a solution
+    fn get_x1_x2(sol: &Solution) -> (i64, i64) {
+        let x1 = *sol.solution.get("x1").expect("x1 missing");
+        let x2 = *sol.solution.get("x2").expect("x2 missing");
+        (x1, x2)
+    }
+
+    /// k larger than number of feasible solutions: we should only get 3 distinct (x1,x2).
+    ///
+    /// Maximize x1 + x2 under x1 + x2 ≤ 1.
+    /// Feasible 0/1 solutions: (0,0), (1,0), (0,1).
+    #[test]
+    fn k_greater_than_num_feasible_solutions() {
+        let poly = make_two_var_at_most_one();
+
+        let mut obj: Objective = HashMap::new();
+        obj.insert("x1", 1.0);
+        obj.insert("x2", 1.0);
+
+        let sols = solve_ilps_k_best(&poly, obj, true, false, 10);
+
+        // We should see exactly 3 feasible/optimal solutions
+        assert_eq!(sols.len(), 3);
+
+        let mut seen: HashSet<(i64, i64)> = HashSet::new();
+        for s in &sols {
+            assert!(matches!(s.status, Status::Optimal | Status::Feasible));
+            let pair = get_x1_x2(s);
+            assert!(pair.0 == 0 || pair.0 == 1);
+            assert!(pair.1 == 0 || pair.1 == 1);
+            seen.insert(pair);
+        }
+
+        assert_eq!(seen.len(), 3);
+        assert!(seen.contains(&(0, 0)));
+        assert!(seen.contains(&(1, 0)));
+        assert!(seen.contains(&(0, 1)));
+    }
+
+    /// Infeasible polytope: we should get exactly ONE solution entry
+    /// with status Infeasible or NoFeasible, and enumeration should stop.
+    #[test]
+    fn infeasible_polytope() {
+        let poly = make_infeasible_one_var();
+
+        let mut obj: Objective = HashMap::new();
+        obj.insert("x", 1.0);
+
+        let sols = solve_ilps_k_best(&poly, obj, true, false, 10);
+
+        assert_eq!(sols.len(), 1);
+        match &sols[0].status {
+            Status::Infeasible | Status::NoFeasible | Status::MIPFailed => {}
+            other => panic!("Expected infeasible or no-feasible status, got {:?}", other),
+        }
+    }
+
+    /// k = 0 means "don't enumerate any solutions".
+    /// The function should do nothing and return an empty vector.
+    #[test]
+    fn k_zero_returns_no_solutions() {
+        let poly = make_two_var_at_most_one();
+
+        let mut obj: Objective = HashMap::new();
+        obj.insert("x1", 1.0);
+        obj.insert("x2", 1.0);
+
+        let sols = solve_ilps_k_best(&poly, obj, true, false, 0);
+
+        assert!(sols.is_empty());
+    }
+
+    /// Zero objective: all feasible solutions are equally good.
+    /// We still expect k-best enumeration to walk through distinct 0/1 assignments.
+    #[test]
+    fn zero_objective_enumerates_distinct_solutions() {
+        let poly = make_two_var_at_most_one();
+
+        // Empty objective => all coeffs 0.0 => obj(x) = 0 for all x.
+        let obj: Objective = HashMap::new();
+
+        let sols = solve_ilps_k_best(&poly, obj, true, false, 10);
+
+        // Same feasible space as before, so we expect 3 distinct assignments.
+        assert_eq!(sols.len(), 3);
+
+        let mut seen: HashSet<(i64, i64)> = HashSet::new();
+        for s in &sols {
+            let pair = get_x1_x2(s);
+            seen.insert(pair);
+        }
+
+        assert_eq!(seen.len(), 3);
+        assert!(seen.contains(&(0, 0)));
+        assert!(seen.contains(&(1, 0)));
+        assert!(seen.contains(&(0, 1)));
+    }
+
+    /// Non-boolean variable should cause a panic with a clear message.
+    #[test]
+    #[should_panic(expected = "solve_ilps_k_best only supports boolean variables")]
+    fn non_boolean_variable_panics() {
+        let variables = vec![
+            Variable { id: "x", bound: (0, 2) }, // not in [0,1]
+        ];
+
+        let A = IntegerSparseMatrix {
+            rows: vec![0],
+            cols: vec![0],
+            vals: vec![1],
+        };
+
+        let b = vec![(0, 2)];
+
+        let poly = SparseLEIntegerPolyhedron {
+            A,
+            b,
+            variables,
+            double_bound: true,
+        };
+
+        let mut obj: Objective = HashMap::new();
+        obj.insert("x", 1.0);
+
+        // This should panic before calling GLPK
+        let _ = solve_ilps_k_best(&poly, obj, true, false, 5);
+    }
 
     #[test]
     fn test_status_enum() {
