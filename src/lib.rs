@@ -14,7 +14,6 @@ use libc::c_int;
 use std::collections::HashMap;
 use std::fmt;
 
-// Extra GLPK functions that your current bindings don't expose
 extern "C" {
     pub fn glp_get_num_rows(P: *mut glpk::glp_prob) -> c_int;
 
