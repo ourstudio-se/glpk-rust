@@ -190,7 +190,7 @@ pub struct SolutionResponse {
 /// ];
 /// 
 /// let mut polytope = SparseLEIntegerPolyhedron {
-///     A: IntegerSparseMatrix {
+///     a: IntegerSparseMatrix {
 ///         rows: vec![0, 1],
 ///         cols: vec![0, 1], 
 ///         vals: vec![1, 1],
