@@ -350,6 +350,34 @@ pub struct glp_prob {
 }
 
 #[repr(C)]
+pub struct glp_smcp {
+    pub msg_lev: c_int,
+    pub meth: c_int,
+    pub pricing: c_int,
+    pub r_test: c_int,
+    pub tol_bnd: c_double,
+    pub tol_dj: c_double,
+    pub tol_piv: c_double,
+    pub obj_ll: c_double,
+    pub obj_ul: c_double,
+    pub it_lim: c_int,
+    pub tm_lim: c_int,
+    pub out_frq: c_int,
+    pub out_dly: c_int,
+    pub presolve: c_int,
+    pub excl: c_int,
+    pub shift: c_int,
+    pub aorn: c_int,
+    pub foo_bar: [c_double; 36],
+}
+
+impl Default for glp_smcp {
+    fn default() -> Self {
+        unsafe { std::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
 pub struct glp_iocp {
     pub msg_lev: c_int,
     pub br_tech: c_int,
@@ -397,6 +425,8 @@ extern "C" {
     pub fn glp_set_col_kind(lp: *mut glp_prob, j: c_int, kind: c_int);
     pub fn glp_set_obj_coef(lp: *mut glp_prob, j: c_int, coef: c_double);
     pub fn glp_load_matrix(lp: *mut glp_prob, ne: c_int, ia: *const c_int, ja: *const c_int, ar: *const c_double);
+    pub fn glp_init_smcp(parm: *mut glp_smcp);
+    pub fn glp_simplex(lp: *mut glp_prob, parm: *const glp_smcp) -> c_int;
     pub fn glp_init_iocp(parm: *mut glp_iocp);
     pub fn glp_intopt(lp: *mut glp_prob, parm: *const glp_iocp) -> c_int;
     pub fn glp_mip_status(lp: *mut glp_prob) -> c_int;

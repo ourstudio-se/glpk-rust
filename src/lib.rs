@@ -205,12 +205,12 @@ pub struct SolutionResponse {
 /// objective.insert("x2", 1.0);
 /// let objectives = vec![objective];
 /// 
-/// let solutions = solve_ilps(&mut polytope, objectives, false, false);
+/// let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
 /// for solution in solutions {
 ///     println!("{:?}", solution);
 /// }
 /// ```
-pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: Vec<Objective<'a>>, maximize: bool, term_out: bool) -> Vec<Solution> {
+pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: Vec<Objective<'a>>, maximize: bool, presolve: bool, term_out: bool) -> Vec<Solution> {
 
     // Initialize an empty vector to store solutions
     let mut solutions: Vec<Solution> = Vec::new();
@@ -302,10 +302,24 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
                 glpk::glp_set_obj_coef(lp, (j + 1) as i32, *coef as f64);
             }
 
-            // Solve the integer problem using presolving
+            // First, solve the LP relaxation to provide an initial basis for the MIP solver
+            let mut simplex_params = glpk::glp_smcp::default();
+            glpk::glp_init_smcp(&mut simplex_params);
+            simplex_params.msg_lev = if term_out { 3 } else { 0 };
+
+            let simplex_ret = glpk::glp_simplex(lp, &simplex_params);
+            if simplex_ret != 0 {
+                solution.status = Status::SimplexFailed;
+                solution.error = Some(format!("GLPK simplex solver failed with code: {}", simplex_ret));
+                solutions.push(solution);
+                continue;
+            }
+
+            // Now solve the integer problem using the LP relaxation basis
             let mut mip_params = glpk::glp_iocp::default();
             glpk::glp_init_iocp(&mut mip_params);
-            mip_params.presolve = 1; 
+            mip_params.presolve = if presolve { 1 } else { 0 };
+            mip_params.msg_lev = if term_out { 3 } else { 0 };
             let mip_ret = glpk::glp_intopt(lp, &mip_params);
 
             if mip_ret != 0 {
@@ -430,7 +444,7 @@ mod tests {
             ("x2", 1.0),
             ("x3", 1.0),
         ])];
-        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         
         assert_eq!(solutions.len(), 1);
         let solution = &solutions[0];
@@ -457,7 +471,7 @@ mod tests {
         };
         
         let objectives = vec![HashMap::new()];
-        let solutions = solve_ilps(&mut polytope, objectives, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::EmptySpace);
@@ -484,7 +498,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -514,7 +528,7 @@ mod tests {
         objective.insert("b2", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -545,7 +559,7 @@ mod tests {
         objective.insert("free", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -574,7 +588,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert!(matches!(solutions[0].status, Status::MIPFailed));
@@ -602,11 +616,11 @@ mod tests {
         let objectives = vec![objective.clone()];
         
         // Test minimization
-        let min_solutions = solve_ilps(&mut polytope, objectives.clone(), false, false);
+        let min_solutions = solve_ilps(&mut polytope, objectives.clone(), false, false, false);
         assert_eq!(min_solutions[0].solution.get("x"), Some(&0));
         
         // Test maximization
-        let max_solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let max_solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         assert_eq!(max_solutions[0].solution.get("x"), Some(&5));
     }
 
@@ -636,7 +650,7 @@ mod tests {
         
         let objectives = vec![obj1, obj2];
         
-        let solutions = solve_ilps(&mut polytope, objectives, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
         
         assert_eq!(solutions.len(), 2);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -666,7 +680,7 @@ mod tests {
         objective.insert("z", 5.0); // Variable not in polytope
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -696,7 +710,7 @@ mod tests {
         objective.insert("y", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -723,7 +737,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -750,7 +764,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -781,7 +795,7 @@ mod tests {
         objective.insert("b", -1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         
         assert_eq!(solutions.len(), 1);
         let solution = &solutions[0];
@@ -816,7 +830,7 @@ mod tests {
         objective.insert("x3", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -854,8 +868,8 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
         
-        let solutions_double = solve_ilps(&mut polytope_double, objectives.clone(), false, false);
-        let solutions_single = solve_ilps(&mut polytope_single, objectives, false, false);
+        let solutions_double = solve_ilps(&mut polytope_double, objectives.clone(), false, false, false);
+        let solutions_single = solve_ilps(&mut polytope_single, objectives, false, false, false);
         
         assert_eq!(solutions_double.len(), 1);
         assert_eq!(solutions_single.len(), 1);
@@ -888,7 +902,7 @@ mod tests {
         objective.insert("x3", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -913,7 +927,7 @@ mod tests {
         };
         
         let objectives = vec![HashMap::new()];
-        solve_ilps(&mut polytope, objectives, false, false);
+        solve_ilps(&mut polytope, objectives, false, false, false);
     }
 
     #[test]
@@ -935,7 +949,7 @@ mod tests {
         };
         
         let objectives = vec![HashMap::new()];
-        solve_ilps(&mut polytope, objectives, false, false);
+        solve_ilps(&mut polytope, objectives, false, false, false);
     }
 
     #[test]
@@ -957,7 +971,7 @@ mod tests {
         };
         
         let objectives = vec![HashMap::new()];
-        solve_ilps(&mut polytope, objectives, false, false);
+        solve_ilps(&mut polytope, objectives, false, false, false);
     }
 
     #[test]
@@ -987,7 +1001,7 @@ mod tests {
         objective.insert("free_binary", 1.0);
         let objectives = vec![objective];
         
-        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -1028,7 +1042,7 @@ mod tests {
         // Try to take a b and c
         let objective = HashMap::from([("b", 1.0), ("a", 1.0), ("c", 1.0)]);
         let objectives = vec![objective];
-        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
 
@@ -1058,7 +1072,7 @@ mod tests {
         };
         let objective = HashMap::from([("a", 1.0), ("b", 1.0), ("c", 1.0), ("R", 1.0)]);
         let objectives = vec![objective];
-        let solutions = solve_ilps(&mut polytope, objectives, true, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
         // Sum solution and check that it is 4
