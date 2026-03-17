@@ -126,7 +126,7 @@ impl fmt::Display for SparseLEIntegerPolyhedron<'_> {
 #[derive(Debug)]
 pub struct Solution {
     pub status: Status,
-    pub objective: i32,
+    pub objective: i64,
     pub solution: HashMap<String, i32>,
     pub error: Option<String>,
 }
@@ -337,7 +337,7 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
                 },
                 2 => {
                     solution.status = Status::Feasible;
-                    solution.objective = glpk::glp_mip_obj_val(lp) as i32;
+                    solution.objective = glpk::glp_mip_obj_val(lp) as i64;
                     for (j, var) in polytope.variables.iter().enumerate() {
                         let x = glpk::glp_mip_col_val(lp, (j + 1) as i32);
                         solution.solution.insert(var.id.to_string(), x as i32);
@@ -353,7 +353,7 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
                 }
                 5 => {
                     solution.status = Status::Optimal;
-                    solution.objective = glpk::glp_mip_obj_val(lp) as i32;
+                    solution.objective = glpk::glp_mip_obj_val(lp) as i64;
                     for (j, var) in polytope.variables.iter().enumerate() {
                         let x = glpk::glp_mip_col_val(lp, (j + 1) as i32);
                         solution.solution.insert(var.id.to_string(), x as i32);
