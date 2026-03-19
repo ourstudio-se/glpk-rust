@@ -24,28 +24,28 @@ pub type Objective<'a> = HashMap<ID<'a>, f64>;
 /// Feel free to extend this file if you need more flags later on.
 pub mod glp_consts {
     // Row/column bound types
-    pub const GLP_FR:  i32 = 1;
-    pub const GLP_LO:  i32 = 2;
-    pub const GLP_UP:  i32 = 3;
-    pub const GLP_DB:  i32 = 4;
-    pub const GLP_FX:  i32 = 5;
+    pub const GLP_FR: i32 = 1;
+    pub const GLP_LO: i32 = 2;
+    pub const GLP_UP: i32 = 3;
+    pub const GLP_DB: i32 = 4;
+    pub const GLP_FX: i32 = 5;
 
     // Variable kinds
-    pub const GLP_CV:  i32 = 1;
-    pub const GLP_IV:  i32 = 2;
-    pub const GLP_BV:  i32 = 3;
+    pub const GLP_CV: i32 = 1;
+    pub const GLP_IV: i32 = 2;
+    pub const GLP_BV: i32 = 3;
 
     // Optimisation direction
     pub const GLP_MIN: i32 = 1;
     pub const GLP_MAX: i32 = 2;
 
     // Solution / MIP status
-    pub const GLP_UNDEF:  i32 = 1;
-    pub const GLP_FEAS:   i32 = 2;
+    pub const GLP_UNDEF: i32 = 1;
+    pub const GLP_FEAS: i32 = 2;
     pub const GLP_INFEAS: i32 = 3;
     pub const GLP_NOFEAS: i32 = 4;
-    pub const GLP_OPT:    i32 = 5;
-    pub const GLP_UNBND:  i32 = 6;
+    pub const GLP_OPT: i32 = 5;
+    pub const GLP_UNBND: i32 = 6;
 }
 
 #[derive(Debug, PartialEq)]
@@ -66,7 +66,6 @@ pub struct Variable<'a> {
     pub id: ID<'a>,
     pub bound: Bound,
 }
-
 
 #[derive(Clone, Hash)]
 pub struct IntegerSparseMatrix {
@@ -102,11 +101,21 @@ impl fmt::Display for SparseLEIntegerPolyhedron<'_> {
         let nr_cols = self.a.cols.iter().max().unwrap_or(&0) + 1;
         // Create 2d array of zeroes
         let mut matrix = vec![vec![0; nr_cols as usize]; nr_rows as usize];
-        for ((r, c), v) in self.a.rows.iter().zip(self.a.cols.iter()).zip(self.a.vals.iter()) {
+        for ((r, c), v) in self
+            .a
+            .rows
+            .iter()
+            .zip(self.a.cols.iter())
+            .zip(self.a.vals.iter())
+        {
             matrix[*r as usize][*c as usize] = *v;
         }
         for variable in &self.variables {
-            write!(f, "{:>space$}", &variable.id.chars().take(3).collect::<String>())?;
+            write!(
+                f,
+                "{:>space$}",
+                &variable.id.chars().take(3).collect::<String>()
+            )?;
         }
         writeln!(f)?;
         for (idx, row) in matrix.iter().enumerate() {
@@ -135,11 +144,11 @@ pub struct SolutionResponse {
     pub solutions: Vec<Solution>,
 }
 
-// 1    GLP_FR      Free variable (−∞ < x < ∞) 
-// 2    GLP_LO      Variable with lower bound (x ≥ l) 
-// 3    GLP_UP      Variable with upper bound (x ≤ u) 
-// 4    GLP_DB      Double-bounded variable (l ≤ x ≤ u) 
-// 5    GLP_FX      Fixed variable (x = l = u) 
+// 1    GLP_FR      Free variable (−∞ < x < ∞)
+// 2    GLP_LO      Variable with lower bound (x ≥ l)
+// 3    GLP_UP      Variable with upper bound (x ≤ u)
+// 4    GLP_DB      Double-bounded variable (l ≤ x ≤ u)
+// 5    GLP_FX      Fixed variable (x = l = u)
 
 // Value	Symbol	Meaning	Example
 // 1	GLP_FR	Free (no bounds)	−∞<x<∞
@@ -158,7 +167,6 @@ pub struct SolutionResponse {
 // GLP_NOFEAS  4  /* No feasible solution exists (dual) */
 // GLP_OPT     5  /* Optimal solution found */
 // GLP_UNBND   6  /* Problem is unbounded */
-
 /// Solves a set of integer linear programming (ILP) problems defined by the given polytope and objectives.
 /// The function ignores objective variables not present in the polytope. All other variables not provided in objective but present in polytope will be set to 0.
 ///
@@ -183,35 +191,40 @@ pub struct SolutionResponse {
 /// ```
 /// use glpk_rust::*;
 /// use std::collections::HashMap;
-/// 
+///
 /// let variables = vec![
 ///     Variable { id: "x1", bound: (0, 5) },
 ///     Variable { id: "x2", bound: (0, 3) },
 /// ];
-/// 
+///
 /// let mut polytope = SparseLEIntegerPolyhedron {
 ///     a: IntegerSparseMatrix {
 ///         rows: vec![0, 1],
-///         cols: vec![0, 1], 
+///         cols: vec![0, 1],
 ///         vals: vec![1, 1],
 ///     },
 ///     b: vec![(0, 10), (0, 8)],
 ///     variables,
 ///     double_bound: true,
 /// };
-/// 
+///
 /// let mut objective = HashMap::new();
 /// objective.insert("x1", 1.0);
 /// objective.insert("x2", 1.0);
 /// let objectives = vec![objective];
-/// 
+///
 /// let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
 /// for solution in solutions {
 ///     println!("{:?}", solution);
 /// }
 /// ```
-pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: Vec<Objective<'a>>, maximize: bool, presolve: bool, term_out: bool) -> Vec<Solution> {
-
+pub fn solve_ilps<'a>(
+    polytope: &mut SparseLEIntegerPolyhedron<'a>,
+    objectives: Vec<Objective<'a>>,
+    maximize: bool,
+    presolve: bool,
+    term_out: bool,
+) -> Vec<Solution> {
     // Initialize an empty vector to store solutions
     let mut solutions: Vec<Solution> = Vec::new();
 
@@ -230,8 +243,16 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
     }
 
     // Check if rows, columns and values are the same lenght. Else panic
-    if (polytope.a.rows.len() != polytope.a.cols.len()) || (polytope.a.rows.len() != polytope.a.vals.len()) || (polytope.a.cols.len() != polytope.a.vals.len()) {
-        panic!("Rows, columns and values must have the same length, got ({},{},{})", polytope.a.rows.len(), polytope.a.cols.len(), polytope.a.vals.len());
+    if (polytope.a.rows.len() != polytope.a.cols.len())
+        || (polytope.a.rows.len() != polytope.a.vals.len())
+        || (polytope.a.cols.len() != polytope.a.vals.len())
+    {
+        panic!(
+            "Rows, columns and values must have the same length, got ({},{},{})",
+            polytope.a.rows.len(),
+            polytope.a.cols.len(),
+            polytope.a.vals.len()
+        );
     }
 
     // Check that the number of rows is equal to the length of b
@@ -240,7 +261,6 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
     }
 
     unsafe {
-
         // Enable or disable terminal output
         glpk::glp_term_out(term_out as c_int);
 
@@ -252,19 +272,34 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
         // Add constraints (rows)
         glpk::glp_add_rows(lp, polytope.b.len() as i32);
         for (i, &b) in polytope.b.iter().enumerate() {
-            let double_bound = if polytope.double_bound { glp_consts::GLP_DB } else { glp_consts::GLP_UP };
+            let double_bound = if polytope.double_bound {
+                glp_consts::GLP_DB
+            } else {
+                glp_consts::GLP_UP
+            };
             glpk::glp_set_row_bnds(lp, (i + 1) as i32, double_bound, b.0 as f64, b.1 as f64);
         }
 
         // Add variables
         glpk::glp_add_cols(lp, polytope.variables.len() as i32);
         for (i, var) in polytope.variables.iter().enumerate() {
-            
             // Set col bounds
             if var.bound.0 == var.bound.1 {
-                glpk::glp_set_col_bnds(lp, (i + 1) as i32, glp_consts::GLP_FX, var.bound.0 as f64, var.bound.1 as f64);
+                glpk::glp_set_col_bnds(
+                    lp,
+                    (i + 1) as i32,
+                    glp_consts::GLP_FX,
+                    var.bound.0 as f64,
+                    var.bound.1 as f64,
+                );
             } else {
-                glpk::glp_set_col_bnds(lp, (i + 1) as i32, glp_consts::GLP_DB, var.bound.0 as f64, var.bound.1 as f64);
+                glpk::glp_set_col_bnds(
+                    lp,
+                    (i + 1) as i32,
+                    glp_consts::GLP_DB,
+                    var.bound.0 as f64,
+                    var.bound.1 as f64,
+                );
             }
 
             // Set col kind - always integer variables
@@ -274,27 +309,37 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
         }
 
         // Set the constraint matrix
-        let rows: Vec<i32> = std::iter::once(0).chain(polytope.a.rows.iter().map(|x| *x + 1)).collect();
-        let cols: Vec<i32> = std::iter::once(0).chain(polytope.a.cols.iter().map(|x| *x + 1)).collect();
-        let vals_f64: Vec<f64> = std::iter::once(0.0).chain(polytope.a.vals.iter().map(|x| *x as f64)).collect();
+        let rows: Vec<i32> = std::iter::once(0)
+            .chain(polytope.a.rows.iter().map(|x| *x + 1))
+            .collect();
+        let cols: Vec<i32> = std::iter::once(0)
+            .chain(polytope.a.cols.iter().map(|x| *x + 1))
+            .collect();
+        let vals_f64: Vec<f64> = std::iter::once(0.0)
+            .chain(polytope.a.vals.iter().map(|x| *x as f64))
+            .collect();
 
         // ne: The number of non-zero elements in the constraint matrix (not the number of rows or columns).
         // ia: An array of row indices (1-based) for each non-zero element.
         // ja: An array of column indices (1-based) for each non-zero element.
         // ar: An array of values corresponding to each non-zero element.
         glpk::glp_load_matrix(
-            lp, 
-            (vals_f64.len()-1) as i32, 
-            rows.as_ptr(), 
-            cols.as_ptr(), 
-            vals_f64.as_ptr()
+            lp,
+            (vals_f64.len() - 1) as i32,
+            rows.as_ptr(),
+            cols.as_ptr(),
+            vals_f64.as_ptr(),
         );
 
         // Solve for multiple objectives
         for obj in objectives.iter() {
-
             // Setup empty solution
-            let mut solution = Solution { status: Status::Undefined, objective: 0.0, solution: HashMap::new(), error: None };
+            let mut solution = Solution {
+                status: Status::Undefined,
+                objective: 0.0,
+                solution: HashMap::new(),
+                error: None,
+            };
 
             // Update the objective function
             for (j, v) in polytope.variables.iter().enumerate() {
@@ -310,7 +355,10 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
             let simplex_ret = glpk::glp_simplex(lp, &simplex_params);
             if simplex_ret != 0 {
                 solution.status = Status::SimplexFailed;
-                solution.error = Some(format!("GLPK simplex solver failed with code: {}", simplex_ret));
+                solution.error = Some(format!(
+                    "GLPK simplex solver failed with code: {}",
+                    simplex_ret
+                ));
                 solutions.push(solution);
                 continue;
             }
@@ -334,7 +382,7 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
                 1 => {
                     solution.status = Status::Undefined;
                     solution.error = Some("Solution is undefined".to_string());
-                },
+                }
                 2 => {
                     solution.status = Status::Feasible;
                     solution.objective = glpk::glp_mip_obj_val(lp);
@@ -342,7 +390,7 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
                         let x = glpk::glp_mip_col_val(lp, (j + 1) as i32);
                         solution.solution.insert(var.id.to_string(), x as i32);
                     }
-                },
+                }
                 3 => {
                     solution.status = Status::Infeasible;
                     solution.error = Some("Infeasible solution exists".to_string());
@@ -358,11 +406,11 @@ pub fn solve_ilps<'a>(polytope: &mut SparseLEIntegerPolyhedron<'a>, objectives: 
                         let x = glpk::glp_mip_col_val(lp, (j + 1) as i32);
                         solution.solution.insert(var.id.to_string(), x as i32);
                     }
-                },
+                }
                 6 => {
                     solution.status = Status::Unbounded;
                     solution.error = Some("Problem is unbounded".to_string());
-                },
+                }
                 x => {
                     panic!("Unknown status when solving ({})", x);
                 }
@@ -400,21 +448,27 @@ mod tests {
     #[test]
     fn test_sparse_le_polyhedron_creation() {
         let variables = vec![
-            Variable { id: "x1", bound: (0, 5) },
-            Variable { id: "x2", bound: (0, 3) },
+            Variable {
+                id: "x1",
+                bound: (0, 5),
+            },
+            Variable {
+                id: "x2",
+                bound: (0, 3),
+            },
         ];
-        
+
         let polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 1],
                 cols: vec![0, 1],
-                vals: vec![2, 3]
-    },
+                vals: vec![2, 3],
+            },
             b: vec![(0, 10), (0, 15)],
             variables,
             double_bound: true,
         };
-        
+
         assert_eq!(polytope.a.vals, vec![2, 3]);
         assert_eq!(polytope.b, vec![(0, 10), (0, 15)]);
         assert!(polytope.double_bound);
@@ -424,16 +478,25 @@ mod tests {
     #[test]
     fn test_simple_conjunction() {
         let variables = vec![
-            Variable { id: "x1", bound: (0, 1) },
-            Variable { id: "x2", bound: (0, 1) },
-            Variable { id: "x3", bound: (0, 1) },
+            Variable {
+                id: "x1",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "x2",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "x3",
+                bound: (0, 1),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0, 0],
                 cols: vec![0, 1, 2],
-                vals: vec![1, 1, 1]
+                vals: vec![1, 1, 1],
             },
             b: vec![(0, 3)],
             variables,
@@ -445,7 +508,7 @@ mod tests {
             ("x3", 1.0),
         ])];
         let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         let solution = &solutions[0];
         assert_eq!(solution.status, Status::Optimal);
@@ -456,50 +519,53 @@ mod tests {
 
     // This test should panic due to empty constraint matrix
     #[test]
-    #[should_panic(expected = "The constraint matrix A cannot be empty, at the moment. This will be supported in future versions.")]
+    #[should_panic(
+        expected = "The constraint matrix A cannot be empty, at the moment. This will be supported in future versions."
+    )]
     fn test_empty_matrix_handling() {
         let variables = vec![];
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![],
                 cols: vec![],
-                vals: vec![]
+                vals: vec![],
             },
             b: vec![],
             variables,
             double_bound: false,
         };
-        
+
         let objectives = vec![HashMap::new()];
         let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::EmptySpace);
     }
 
     #[test]
     fn test_single_variable_optimization() {
-        let variables = vec![
-            Variable { id: "x", bound: (0, 10) },
-        ];
+        let variables = vec![Variable {
+            id: "x",
+            bound: (0, 10),
+        }];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0],
                 cols: vec![0],
-                vals: vec![1]
+                vals: vec![1],
             },
             b: vec![(0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
         assert_eq!(solutions[0].solution.get("x"), Some(&0));
@@ -508,28 +574,34 @@ mod tests {
     #[test]
     fn test_binary_variables() {
         let variables = vec![
-            Variable { id: "b1", bound: (0, 1) },
-            Variable { id: "b2", bound: (0, 1) },
+            Variable {
+                id: "b1",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "b2",
+                bound: (0, 1),
+            },
         ];
-        
+
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0],
                 cols: vec![0, 1],
-                vals: vec![1, 1]
+                vals: vec![1, 1],
             },
             b: vec![(1, 1)],
             variables,
             double_bound: false,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("b1", 1.0);
         objective.insert("b2", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
         let b1_val = solutions[0].solution.get("b1").unwrap();
@@ -540,27 +612,33 @@ mod tests {
     #[test]
     fn test_fixed_variables() {
         let variables = vec![
-            Variable { id: "fixed", bound: (5, 5) },
-            Variable { id: "free", bound: (0, 10) },
+            Variable {
+                id: "fixed",
+                bound: (5, 5),
+            },
+            Variable {
+                id: "free",
+                bound: (0, 10),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0],
                 cols: vec![0, 1],
-                vals: vec![1, 1]
+                vals: vec![1, 1],
             },
             b: vec![(0, 15)],
             variables,
             double_bound: false,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("free", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
         assert_eq!(solutions[0].solution.get("fixed"), Some(&5));
@@ -569,56 +647,58 @@ mod tests {
 
     #[test]
     fn test_infeasible_problem() {
-        let variables = vec![
-            Variable { id: "x", bound: (5, 10) },
-        ];
+        let variables = vec![Variable {
+            id: "x",
+            bound: (5, 10),
+        }];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0],
                 cols: vec![0],
-                vals: vec![1]
+                vals: vec![1],
             },
             b: vec![(0, 3)],
             variables,
             double_bound: true,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert!(matches!(solutions[0].status, Status::MIPFailed));
     }
 
     #[test]
     fn test_maximize_vs_minimize() {
-        let variables = vec![
-            Variable { id: "x", bound: (0, 10) },
-        ];
+        let variables = vec![Variable {
+            id: "x",
+            bound: (0, 10),
+        }];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0],
                 cols: vec![0],
-                vals: vec![1]
+                vals: vec![1],
             },
             b: vec![(0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         let objectives = vec![objective.clone()];
-        
+
         // Test minimization
         let min_solutions = solve_ilps(&mut polytope, objectives.clone(), false, false, false);
         assert_eq!(min_solutions[0].solution.get("x"), Some(&0));
-        
+
         // Test maximization
         let max_solutions = solve_ilps(&mut polytope, objectives, true, false, false);
         assert_eq!(max_solutions[0].solution.get("x"), Some(&5));
@@ -627,31 +707,37 @@ mod tests {
     #[test]
     fn test_multiple_objectives() {
         let variables = vec![
-            Variable { id: "x", bound: (0, 10) },
-            Variable { id: "y", bound: (0, 10) },
+            Variable {
+                id: "x",
+                bound: (0, 10),
+            },
+            Variable {
+                id: "y",
+                bound: (0, 10),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0],
                 cols: vec![0, 1],
-                vals: vec![1, 1]
+                vals: vec![1, 1],
             },
             b: vec![(0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let mut obj1 = HashMap::new();
         obj1.insert("x", 1.0);
-        
+
         let mut obj2 = HashMap::new();
         obj2.insert("y", 1.0);
-        
+
         let objectives = vec![obj1, obj2];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
-        
+
         assert_eq!(solutions.len(), 2);
         assert_eq!(solutions[0].status, Status::Optimal);
         assert_eq!(solutions[1].status, Status::Optimal);
@@ -660,28 +746,34 @@ mod tests {
     #[test]
     fn test_objective_with_missing_variables() {
         let variables = vec![
-            Variable { id: "x", bound: (0, 10) },
-            Variable { id: "y", bound: (0, 10) },
+            Variable {
+                id: "x",
+                bound: (0, 10),
+            },
+            Variable {
+                id: "y",
+                bound: (0, 10),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0],
                 cols: vec![0, 1],
-                vals: vec![1, 1]
+                vals: vec![1, 1],
             },
             b: vec![(0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         objective.insert("z", 5.0); // Variable not in polytope
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
         assert_eq!(solutions[0].solution.get("y"), Some(&0));
@@ -690,82 +782,90 @@ mod tests {
     #[test]
     fn test_negative_coefficients() {
         let variables = vec![
-            Variable { id: "x", bound: (0, 10) },
-            Variable { id: "y", bound: (0, 10) },
+            Variable {
+                id: "x",
+                bound: (0, 10),
+            },
+            Variable {
+                id: "y",
+                bound: (0, 10),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0],
                 cols: vec![0, 1],
-                vals: vec![-1, 1]
+                vals: vec![-1, 1],
             },
             b: vec![(0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         objective.insert("y", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
     }
 
     #[test]
     fn test_zero_coefficient_matrix() {
-        let variables = vec![
-            Variable { id: "x", bound: (0, 10) },
-        ];
+        let variables = vec![Variable {
+            id: "x",
+            bound: (0, 10),
+        }];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0],
                 cols: vec![0],
-                vals: vec![0]
+                vals: vec![0],
             },
             b: vec![(0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
     }
 
     #[test]
     fn test_large_bounds() {
-        let variables = vec![
-            Variable { id: "x", bound: (0, 1000000) },
-        ];
+        let variables = vec![Variable {
+            id: "x",
+            bound: (0, 1000000),
+        }];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0],
                 cols: vec![0],
-                vals: vec![1]
+                vals: vec![1],
             },
             b: vec![(0, 500000)],
             variables,
             double_bound: true,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
         assert_eq!(solutions[0].solution.get("x"), Some(&500000));
@@ -774,29 +874,38 @@ mod tests {
     #[test]
     fn test_json_data_polyhedron() {
         let variables = vec![
-            Variable { id: "a", bound: (0, 1) },
-            Variable { id: "b", bound: (0, 1) },
-            Variable { id: "18a7bec7bbb9fe127d6107f77af0f11b24a6a846", bound: (0, 1) },
+            Variable {
+                id: "a",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "b",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "18a7bec7bbb9fe127d6107f77af0f11b24a6a846",
+                bound: (0, 1),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0, 0, 1, 1, 1, 2],
                 cols: vec![0, 1, 2, 0, 1, 2, 2],
-                vals: vec![-1, -1, 2, 1, 1, -2, -1]
-    },
+                vals: vec![-1, -1, 2, 1, 1, -2, -1],
+            },
             b: vec![(0, 1), (0, 0), (0, -1)],
             variables,
             double_bound: false,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("a", 1.0);
         objective.insert("b", -1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         let solution = &solutions[0];
         assert_eq!(solution.status, Status::Optimal);
@@ -808,45 +917,55 @@ mod tests {
     #[test]
     fn test_complex_constraint_system() {
         let variables = vec![
-            Variable { id: "x1", bound: (0, 10) },
-            Variable { id: "x2", bound: (0, 10) },
-            Variable { id: "x3", bound: (0, 10) },
+            Variable {
+                id: "x1",
+                bound: (0, 10),
+            },
+            Variable {
+                id: "x2",
+                bound: (0, 10),
+            },
+            Variable {
+                id: "x3",
+                bound: (0, 10),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0, 0, 1, 1, 1],
                 cols: vec![0, 1, 2, 0, 1, 2],
-                vals: vec![1, 2, 3, 2, 1, 1]
+                vals: vec![1, 2, 3, 2, 1, 1],
             },
             b: vec![(0, 15), (0, 10)],
             variables,
             double_bound: true,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x1", 3.0);
         objective.insert("x2", 2.0);
         objective.insert("x3", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
     }
 
     #[test]
     fn test_double_bound_vs_single_bound() {
-        let variables = vec![
-            Variable { id: "x", bound: (2, 8) },
-        ];
+        let variables = vec![Variable {
+            id: "x",
+            bound: (2, 8),
+        }];
 
         let mut polytope_double = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0],
                 cols: vec![0],
-                vals: vec![1]
+                vals: vec![1],
             },
             b: vec![(0, 10)],
             variables: variables.clone(),
@@ -857,20 +976,26 @@ mod tests {
             a: IntegerSparseMatrix {
                 rows: vec![0],
                 cols: vec![0],
-                vals: vec![1]
+                vals: vec![1],
             },
             b: vec![(0, 10)],
             variables,
             double_bound: false,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         let objectives = vec![objective];
-        
-        let solutions_double = solve_ilps(&mut polytope_double, objectives.clone(), false, false, false);
+
+        let solutions_double = solve_ilps(
+            &mut polytope_double,
+            objectives.clone(),
+            false,
+            false,
+            false,
+        );
         let solutions_single = solve_ilps(&mut polytope_single, objectives, false, false, false);
-        
+
         assert_eq!(solutions_double.len(), 1);
         assert_eq!(solutions_single.len(), 1);
         assert_eq!(solutions_double[0].status, Status::Optimal);
@@ -880,30 +1005,39 @@ mod tests {
     #[test]
     fn test_sparse_matrix_with_gaps() {
         let variables = vec![
-            Variable { id: "x1", bound: (0, 10) },
-            Variable { id: "x2", bound: (0, 10) },
-            Variable { id: "x3", bound: (0, 10) },
+            Variable {
+                id: "x1",
+                bound: (0, 10),
+            },
+            Variable {
+                id: "x2",
+                bound: (0, 10),
+            },
+            Variable {
+                id: "x3",
+                bound: (0, 10),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 2],
                 cols: vec![0, 2],
-                vals: vec![1, 1]
+                vals: vec![1, 1],
             },
             b: vec![(0, 5), (0, 5), (0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("x1", 1.0);
         objective.insert("x2", 1.0);
         objective.insert("x3", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
     }
@@ -911,65 +1045,72 @@ mod tests {
     #[test]
     #[should_panic(expected = "Rows, columns and values must have the same length")]
     fn test_mismatched_matrix_dimensions() {
-        let variables = vec![
-            Variable { id: "x", bound: (0, 10) },
-        ];
+        let variables = vec![Variable {
+            id: "x",
+            bound: (0, 10),
+        }];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 1],
                 cols: vec![0],
-                vals: vec![1]
+                vals: vec![1],
             },
             b: vec![(0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let objectives = vec![HashMap::new()];
         solve_ilps(&mut polytope, objectives, false, false, false);
     }
 
     #[test]
-    #[should_panic(expected = "The number of variables must be at least as large as the maximum column index in the constraint matrix, got (1,2)")]
+    #[should_panic(
+        expected = "The number of variables must be at least as large as the maximum column index in the constraint matrix, got (1,2)"
+    )]
     fn test_variable_column_mismatch() {
-        let variables = vec![
-            Variable { id: "x", bound: (0, 10) },
-        ];
+        let variables = vec![Variable {
+            id: "x",
+            bound: (0, 10),
+        }];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0],
                 cols: vec![1],
-                vals: vec![1]
+                vals: vec![1],
             },
             b: vec![(0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let objectives = vec![HashMap::new()];
         solve_ilps(&mut polytope, objectives, false, false, false);
     }
 
     #[test]
-    #[should_panic(expected = "The number of elements in b must be at least as large as the maximum row index in the constraint matrix, got (1,2)")]
+    #[should_panic(
+        expected = "The number of elements in b must be at least as large as the maximum row index in the constraint matrix, got (1,2)"
+    )]
     fn test_row_bound_mismatch() {
-        let variables = vec![
-            Variable { id: "x", bound: (0, 10) },
-        ];
+        let variables = vec![Variable {
+            id: "x",
+            bound: (0, 10),
+        }];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 1],
                 cols: vec![0, 0],
-                vals: vec![1, 1]
+                vals: vec![1, 1],
             },
             b: vec![(0, 5)],
             variables,
             double_bound: true,
         };
-        
+
         let objectives = vec![HashMap::new()];
         solve_ilps(&mut polytope, objectives, false, false, false);
     }
@@ -979,39 +1120,48 @@ mod tests {
         // Test that boolean variables can be fixed to specific values
         // Using bounds that won't be classified as binary to avoid GLPK binary variable behavior
         let variables = vec![
-            Variable { id: "fixed_zero", bound: (0, 0) },
-            Variable { id: "fixed_one", bound: (1, 1) },
-            Variable { id: "free_binary", bound: (0, 1) },
+            Variable {
+                id: "fixed_zero",
+                bound: (0, 0),
+            },
+            Variable {
+                id: "fixed_one",
+                bound: (1, 1),
+            },
+            Variable {
+                id: "free_binary",
+                bound: (0, 1),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0, 0],
                 cols: vec![0, 1, 2],
-                vals: vec![1, 1, 1]
-    },
+                vals: vec![1, 1, 1],
+            },
             b: vec![(0, 10)],
             variables,
             double_bound: false,
         };
-        
+
         let mut objective = HashMap::new();
         objective.insert("fixed_zero", 1.0);
         objective.insert("fixed_one", 1.0);
         objective.insert("free_binary", 1.0);
         let objectives = vec![objective];
-        
+
         let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
-        
+
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
-        
+
         // Fixed to 0 should remain 0 even when classified as binary
         assert_eq!(solutions[0].solution.get("fixed_zero"), Some(&0));
-        
+
         // Fixed to 1 should remain 1 even when classified as binary
         assert_eq!(solutions[0].solution.get("fixed_one"), Some(&1));
-        
+
         // Free binary variable should be able to take value 0 or 1
         // With maximization, it should be 1
         assert_eq!(solutions[0].solution.get("free_binary"), Some(&1));
@@ -1022,18 +1172,30 @@ mod tests {
         // 0 <= [  1,   1,   1,   3] <=   4
         // 0 <= [ -1,  -1,  -1,  -5] <=  -2
         let variables = vec![
-            Variable { id: "a", bound: (0, 1) },
-            Variable { id: "b", bound: (0, 1) },
-            Variable { id: "c", bound: (0, 1) },
-            Variable { id: "A", bound: (1, 1) } // Fixed to 1 means at most one of a,b,c can be 1
+            Variable {
+                id: "a",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "b",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "c",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "A",
+                bound: (1, 1),
+            }, // Fixed to 1 means at most one of a,b,c can be 1
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0, 0, 0, 0, 1, 1, 1, 1],
                 cols: vec![3, 0, 1, 2, 3, 0, 1, 2],
-                vals: vec![3, 1, 1, 1, -5, -1, -1, -1]
-    },
+                vals: vec![3, 1, 1, 1, -5, -1, -1, -1],
+            },
             b: vec![(0, 4), (0, -2)],
             variables,
             double_bound: false,
@@ -1047,24 +1209,38 @@ mod tests {
         assert_eq!(solutions[0].status, Status::Optimal);
 
         // Check that at most one of a,b,c is 1
-        let sum_abc = solutions[0].solution.get("a").unwrap() + solutions[0].solution.get("b").unwrap() + solutions[0].solution.get("c").unwrap();
+        let sum_abc = solutions[0].solution.get("a").unwrap()
+            + solutions[0].solution.get("b").unwrap()
+            + solutions[0].solution.get("c").unwrap();
         assert!(sum_abc <= 1);
     }
 
     #[test]
     fn test_that_shape_too_small() {
         let variables = vec![
-            Variable { id: "a", bound: (0, 1) },
-            Variable { id: "b", bound: (0, 1) },
-            Variable { id: "c", bound: (0, 1) },
-            Variable { id: "R", bound: (0, 1) } 
+            Variable {
+                id: "a",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "b",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "c",
+                bound: (0, 1),
+            },
+            Variable {
+                id: "R",
+                bound: (0, 1),
+            },
         ];
 
         let mut polytope = SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
-                rows: vec![0,0],
-                cols: vec![0,1],
-                vals: vec![0,0]
+                rows: vec![0, 0],
+                cols: vec![0, 1],
+                vals: vec![0, 0],
             },
             b: vec![(0, 1)],
             variables,
