@@ -48,6 +48,32 @@ pub mod glp_consts {
     pub const GLP_UNBND: i32 = 6;
 }
 
+struct GlpProblem {
+    ptr: *mut glpk::glp_prob,
+}
+
+impl GlpProblem {
+    fn new() -> Self {
+        let ptr = unsafe { glpk::glp_create_prob() };
+        assert!(!ptr.is_null(), "glp_create_prob returned null");
+        Self { ptr }
+    }
+
+    fn as_ptr(&self) -> *mut glpk::glp_prob {
+        self.ptr
+    }
+}
+
+impl Drop for GlpProblem {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.ptr.is_null() {
+                glpk::glp_delete_prob(self.ptr);
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Status {
     Undefined = 1,
@@ -456,7 +482,8 @@ pub fn solve_ilps<'a>(
 
         // Create the problem
         let direction = if maximize { 2 } else { 1 };
-        let lp = glpk::glp_create_prob();
+        let glp_prob = GlpProblem::new();
+        let lp = glp_prob.as_ptr();
         glpk::glp_set_obj_dir(lp, direction);
 
         // Add constraints (rows)
@@ -610,16 +637,11 @@ pub fn solve_ilps<'a>(
                     solution.error = Some("Problem is unbounded".to_string());
                 }
                 x => {
-                    // Clean up before returning error
-                    glpk::glp_delete_prob(lp);
                     return Err(SolverError::UnknownStatus(x));
                 }
             }
             solutions.push(solution);
         }
-
-        // Clean up
-        glpk::glp_delete_prob(lp);
 
         Ok(solutions)
     }
@@ -1501,5 +1523,97 @@ mod tests {
         // Should succeed with deduplication
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
+    }
+
+    #[test]
+    fn test_extremely_large_problem_simplex_or_mip_failure() {
+        // Create a problem that may cause solver issues due to extreme scaling
+        let mut variables = Vec::new();
+        for i in 0..1000 {
+            variables.push(Variable {
+                id: Box::leak(format!("x{}", i).into_boxed_str()),
+                bound: (-1000000, 1000000),
+            });
+        }
+
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+
+        // Create a very large, potentially ill-conditioned system
+        for i in 0..1000 {
+            for j in 0..1000 {
+                rows.push(i);
+                cols.push(j);
+                // Use extreme values that might cause numerical issues
+                vals.push(if (i + j) % 2 == 0 { 1000000 } else { -1000000 });
+            }
+        }
+
+        let mut bounds = Vec::new();
+        for _ in 0..1000 {
+            bounds.push((-1000000, 1000000));
+        }
+
+        let mut polytope = SparseLEIntegerPolyhedron {
+            a: IntegerSparseMatrix { rows, cols, vals },
+            b: bounds,
+            variables,
+            double_bound: true,
+        };
+
+        let mut objective = HashMap::new();
+        objective.insert("x0", 1.0);
+        let objectives = vec![objective];
+
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
+
+        // We expect either SimplexFailed, MIPFailed, or success
+        // The important part is that we don't panic and handle the error gracefully
+        assert_eq!(solutions.len(), 1);
+        assert!(
+            matches!(solutions[0].status, Status::SimplexFailed)
+                || matches!(solutions[0].status, Status::MIPFailed)
+                || matches!(solutions[0].status, Status::Optimal)
+                || matches!(solutions[0].status, Status::Feasible)
+                || matches!(solutions[0].status, Status::Infeasible)
+                || matches!(solutions[0].status, Status::NoFeasible)
+                || matches!(solutions[0].status, Status::Unbounded)
+        );
+    }
+
+    #[test]
+    fn test_conflicting_constraints_causing_solver_failure() {
+        // Create a problem with highly conflicting constraints
+        let variables = vec![Variable {
+            id: "x",
+            bound: (0, 1),
+        }];
+
+        let mut polytope = SparseLEIntegerPolyhedron {
+            a: IntegerSparseMatrix {
+                rows: vec![0],
+                cols: vec![0],
+                vals: vec![1],
+            },
+            b: vec![(10, 5)], // Invalid: lower bound > upper bound
+            variables,
+            double_bound: true,
+        };
+
+        let mut objective = HashMap::new();
+        objective.insert("x", 1.0);
+        let objectives = vec![objective];
+
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
+
+        // This should fail at either simplex or MIP stage
+        assert_eq!(solutions.len(), 1);
+        assert!(
+            matches!(solutions[0].status, Status::SimplexFailed)
+                || matches!(solutions[0].status, Status::MIPFailed)
+                || matches!(solutions[0].status, Status::Infeasible)
+                || matches!(solutions[0].status, Status::NoFeasible)
+        );
     }
 }
