@@ -1,6 +1,6 @@
 [package]
 name = "glpk-rust"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "GPL-3.0"
 description = "Rust wrapper for GLPK (GNU Linear Programming Kit) with static linking"
@@ -9,14 +9,14 @@ keywords = ["optimization", "linear-programming", "glpk", "integer-programming"]
 categories = ["mathematics", "science"]
 
 [dependencies]
-libc = "0.2"
+libc = "0.2.186"
 
 [build-dependencies]
-cc = "1.0"
+cc = "1.2.61"
 num_cpus = "1.16"
-pkg-config = "0.3"
-cmake = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking"] }
-zip = "0.6"
-tar = "0.4"
-flate2 = "1.0"
+pkg-config = "0.3.33"
+cmake = "0.1.58"
+reqwest = { version = "0.13.3", default-features = false, features = ["blocking"] }
+zip = "8.6.0"
+tar = "0.4.45"
+flate2 = "1.1.9"
