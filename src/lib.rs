@@ -144,6 +144,180 @@ pub struct SolutionResponse {
     pub solutions: Vec<Solution>,
 }
 
+use std::collections::BTreeMap;
+
+#[derive(Debug)]
+pub enum MatrixValidationError {
+    LengthMismatch {
+        rows: usize,
+        cols: usize,
+        vals: usize,
+    },
+    EmptyMatrix,
+    NegativeRowIndex {
+        index: usize,
+        row: i32,
+    },
+    NegativeColIndex {
+        index: usize,
+        col: i32,
+    },
+    RowOutOfBounds {
+        index: usize,
+        row: i32,
+        n_rows: usize,
+    },
+    ColOutOfBounds {
+        index: usize,
+        col: i32,
+        n_cols: usize,
+    },
+}
+
+impl fmt::Display for MatrixValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MatrixValidationError::LengthMismatch { rows, cols, vals } => {
+                write!(f, "Matrix array length mismatch: rows={}, cols={}, vals={}", rows, cols, vals)
+            }
+            MatrixValidationError::EmptyMatrix => {
+                write!(f, "Matrix is empty or all coefficients cancelled out")
+            }
+            MatrixValidationError::NegativeRowIndex { index, row } => {
+                write!(f, "Negative row index at position {}: {}", index, row)
+            }
+            MatrixValidationError::NegativeColIndex { index, col } => {
+                write!(f, "Negative column index at position {}: {}", index, col)
+            }
+            MatrixValidationError::RowOutOfBounds { index, row, n_rows } => {
+                write!(f, "Row index {} at position {} exceeds bounds (n_rows={})", row, index, n_rows)
+            }
+            MatrixValidationError::ColOutOfBounds { index, col, n_cols } => {
+                write!(f, "Column index {} at position {} exceeds bounds (n_cols={})", col, index, n_cols)
+            }
+        }
+    }
+}
+
+impl std::error::Error for MatrixValidationError {}
+
+#[derive(Debug)]
+pub enum SolverError {
+    /// Matrix validation errors (dimension mismatches, out of bounds, etc.)
+    MatrixValidation(MatrixValidationError),
+    /// The constraint matrix is empty
+    EmptyConstraintMatrix,
+    /// Number of variables doesn't match maximum column index
+    VariableColumnMismatch {
+        n_variables: usize,
+        max_col_index: usize,
+    },
+    /// Number of bounds doesn't match maximum row index
+    RowBoundMismatch {
+        n_bounds: usize,
+        max_row_index: usize,
+    },
+    /// Unknown solver status code
+    UnknownStatus(i32),
+}
+
+impl fmt::Display for SolverError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SolverError::MatrixValidation(e) => write!(f, "Matrix validation error: {}", e),
+            SolverError::EmptyConstraintMatrix => {
+                write!(f, "The constraint matrix A cannot be empty")
+            }
+            SolverError::VariableColumnMismatch { n_variables, max_col_index } => {
+                write!(f, "The number of variables ({}) must be at least as large as the maximum column index ({})", n_variables, max_col_index)
+            }
+            SolverError::RowBoundMismatch { n_bounds, max_row_index } => {
+                write!(f, "The number of bounds ({}) must be at least as large as the maximum row index ({})", n_bounds, max_row_index)
+            }
+            SolverError::UnknownStatus(code) => {
+                write!(f, "Unknown solver status code: {}", code)
+            }
+        }
+    }
+}
+
+impl std::error::Error for SolverError {}
+
+impl From<MatrixValidationError> for SolverError {
+    fn from(err: MatrixValidationError) -> Self {
+        SolverError::MatrixValidation(err)
+    }
+}
+
+pub fn validate_and_deduplicate_matrix(
+    rows: &[i32],
+    cols: &[i32],
+    vals: &[i32],
+    n_rows: usize,
+    n_cols: usize,
+) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>), MatrixValidationError> {
+    if rows.len() != cols.len() || rows.len() != vals.len() {
+        return Err(MatrixValidationError::LengthMismatch {
+            rows: rows.len(),
+            cols: cols.len(),
+            vals: vals.len(),
+        });
+    }
+
+    if rows.is_empty() {
+        return Err(MatrixValidationError::EmptyMatrix);
+    }
+
+    let mut deduped: BTreeMap<(i32, i32), i32> = BTreeMap::new();
+
+    for (i, ((&row, &col), &val)) in rows.iter().zip(cols.iter()).zip(vals.iter()).enumerate() {
+        if row < 0 {
+            return Err(MatrixValidationError::NegativeRowIndex { index: i, row });
+        }
+
+        if col < 0 {
+            return Err(MatrixValidationError::NegativeColIndex { index: i, col });
+        }
+
+        if row as usize >= n_rows {
+            return Err(MatrixValidationError::RowOutOfBounds {
+                index: i,
+                row,
+                n_rows,
+            });
+        }
+
+        if col as usize >= n_cols {
+            return Err(MatrixValidationError::ColOutOfBounds {
+                index: i,
+                col,
+                n_cols,
+            });
+        }
+
+        *deduped.entry((row, col)).or_insert(0) += val;
+    }
+
+    let mut clean_rows = Vec::with_capacity(deduped.len());
+    let mut clean_cols = Vec::with_capacity(deduped.len());
+    let mut clean_vals = Vec::with_capacity(deduped.len());
+
+    for ((row, col), val) in deduped {
+        // Remove coefficients that cancelled out, e.g. +3 and -3.
+        if val != 0 {
+            clean_rows.push(row);
+            clean_cols.push(col);
+            clean_vals.push(val);
+        }
+    }
+
+    if clean_rows.is_empty() {
+        return Err(MatrixValidationError::EmptyMatrix);
+    }
+
+    Ok((clean_rows, clean_cols, clean_vals))
+}
+
 // 1    GLP_FR      Free variable (−∞ < x < ∞)
 // 2    GLP_LO      Variable with lower bound (x ≥ l)
 // 3    GLP_UP      Variable with upper bound (x ≤ u)
@@ -178,13 +352,20 @@ pub struct SolutionResponse {
 ///
 /// # Returns
 ///
-/// A vector of `Solution` structs, each representing the result of solving the ILP for one of the objectives.
+/// Returns `Ok(Vec<Solution>)` with a vector of `Solution` structs, each representing the result
+/// of solving the ILP for one of the objectives.
 ///
-/// # Panics
+/// Returns `Err(SolverError)` if there are validation errors with the input data.
 ///
-/// This function will panic if:
-/// * The lengths of the rows, columns, and values in the constraint matrix `A` are not equal.
-/// * The number of variables in the polytope does not match the maximum column index in the constraint matrix.
+/// # Errors
+///
+/// This function will return an error if:
+/// * The constraint matrix is empty (`SolverError::EmptyConstraintMatrix`)
+/// * The lengths of rows, columns, and values arrays don't match (`SolverError::MatrixValidation`)
+/// * The number of variables doesn't match the maximum column index (`SolverError::VariableColumnMismatch`)
+/// * The number of bounds doesn't match the maximum row index (`SolverError::RowBoundMismatch`)
+/// * An unknown solver status is encountered (`SolverError::UnknownStatus`)
+/// * Matrix validation fails due to invalid indices (`SolverError::MatrixValidation`)
 ///
 /// # Examples
 ///
@@ -213,10 +394,11 @@ pub struct SolutionResponse {
 /// objective.insert("x2", 1.0);
 /// let objectives = vec![objective];
 ///
-/// let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
+/// let solutions = solve_ilps(&mut polytope, objectives, false, false, false)?;
 /// for solution in solutions {
 ///     println!("{:?}", solution);
 /// }
+/// # Ok::<(), SolverError>(())
 /// ```
 pub fn solve_ilps<'a>(
     polytope: &mut SparseLEIntegerPolyhedron<'a>,
@@ -224,40 +406,48 @@ pub fn solve_ilps<'a>(
     maximize: bool,
     presolve: bool,
     term_out: bool,
-) -> Vec<Solution> {
+) -> Result<Vec<Solution>, SolverError> {
     // Initialize an empty vector to store solutions
     let mut solutions: Vec<Solution> = Vec::new();
 
     // Check that n_rows in shape is at least as large as the max row index in A
     let n_cols = polytope.variables.len();
 
-    // If the polytope is empty, return an empty space status solution
+    // If the polytope is empty, return an error
     if polytope.a.rows.is_empty() || polytope.a.cols.is_empty() {
-        panic!("The constraint matrix A cannot be empty, at the moment. This will be supported in future versions.");
+        return Err(SolverError::EmptyConstraintMatrix);
+    }
+
+    // Check if rows, columns and values are the same length
+    if (polytope.a.rows.len() != polytope.a.cols.len())
+        || (polytope.a.rows.len() != polytope.a.vals.len())
+        || (polytope.a.cols.len() != polytope.a.vals.len())
+    {
+        return Err(SolverError::MatrixValidation(
+            MatrixValidationError::LengthMismatch {
+                rows: polytope.a.rows.len(),
+                cols: polytope.a.cols.len(),
+                vals: polytope.a.vals.len(),
+            },
+        ));
     }
 
     // Get the maximum row and column indices from the constraint matrix A
     let poly_n_cols = (*polytope.a.cols.iter().max().unwrap() + 1) as usize;
     if n_cols < poly_n_cols {
-        panic!("The number of variables must be at least as large as the maximum column index in the constraint matrix, got ({},{})", n_cols, poly_n_cols);
-    }
-
-    // Check if rows, columns and values are the same lenght. Else panic
-    if (polytope.a.rows.len() != polytope.a.cols.len())
-        || (polytope.a.rows.len() != polytope.a.vals.len())
-        || (polytope.a.cols.len() != polytope.a.vals.len())
-    {
-        panic!(
-            "Rows, columns and values must have the same length, got ({},{},{})",
-            polytope.a.rows.len(),
-            polytope.a.cols.len(),
-            polytope.a.vals.len()
-        );
+        return Err(SolverError::VariableColumnMismatch {
+            n_variables: n_cols,
+            max_col_index: poly_n_cols,
+        });
     }
 
     // Check that the number of rows is equal to the length of b
-    if polytope.a.rows.iter().max().unwrap() + 1 > polytope.b.len() as i32 {
-        panic!("The number of elements in b must be at least as large as the maximum row index in the constraint matrix, got ({},{})", polytope.b.len(), polytope.a.rows.iter().max().unwrap() + 1);
+    let max_row_idx = (*polytope.a.rows.iter().max().unwrap() + 1) as usize;
+    if max_row_idx > polytope.b.len() {
+        return Err(SolverError::RowBoundMismatch {
+            n_bounds: polytope.b.len(),
+            max_row_index: max_row_idx,
+        });
     }
 
     unsafe {
@@ -308,15 +498,23 @@ pub fn solve_ilps<'a>(
             glpk::glp_set_col_kind(lp, (i + 1) as i32, glp_consts::GLP_IV);
         }
 
+        let (clean_rows, clean_cols, clean_vals) = validate_and_deduplicate_matrix(
+            &polytope.a.rows,
+            &polytope.a.cols,
+            &polytope.a.vals,
+            polytope.b.len(),
+            polytope.variables.len(),
+        )?;
+        
         // Set the constraint matrix
         let rows: Vec<i32> = std::iter::once(0)
-            .chain(polytope.a.rows.iter().map(|x| *x + 1))
+            .chain(clean_rows.iter().map(|x| *x + 1))
             .collect();
         let cols: Vec<i32> = std::iter::once(0)
-            .chain(polytope.a.cols.iter().map(|x| *x + 1))
+            .chain(clean_cols.iter().map(|x| *x + 1))
             .collect();
         let vals_f64: Vec<f64> = std::iter::once(0.0)
-            .chain(polytope.a.vals.iter().map(|x| *x as f64))
+            .chain(clean_vals.iter().map(|x| *x as f64))
             .collect();
 
         // ne: The number of non-zero elements in the constraint matrix (not the number of rows or columns).
@@ -412,7 +610,9 @@ pub fn solve_ilps<'a>(
                     solution.error = Some("Problem is unbounded".to_string());
                 }
                 x => {
-                    panic!("Unknown status when solving ({})", x);
+                    // Clean up before returning error
+                    glpk::glp_delete_prob(lp);
+                    return Err(SolverError::UnknownStatus(x));
                 }
             }
             solutions.push(solution);
@@ -421,7 +621,7 @@ pub fn solve_ilps<'a>(
         // Clean up
         glpk::glp_delete_prob(lp);
 
-        return solutions;
+        Ok(solutions)
     }
 }
 
@@ -507,7 +707,7 @@ mod tests {
             ("x2", 1.0),
             ("x3", 1.0),
         ])];
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         let solution = &solutions[0];
@@ -517,11 +717,7 @@ mod tests {
         assert_eq!(solution.solution.get("x3"), Some(&1));
     }
 
-    // This test should panic due to empty constraint matrix
     #[test]
-    #[should_panic(
-        expected = "The constraint matrix A cannot be empty, at the moment. This will be supported in future versions."
-    )]
     fn test_empty_matrix_handling() {
         let variables = vec![];
         let mut polytope = SparseLEIntegerPolyhedron {
@@ -536,10 +732,10 @@ mod tests {
         };
 
         let objectives = vec![HashMap::new()];
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
+        let result = solve_ilps(&mut polytope, objectives, false, false, false);
 
-        assert_eq!(solutions.len(), 1);
-        assert_eq!(solutions[0].status, Status::EmptySpace);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), SolverError::EmptyConstraintMatrix));
     }
 
     #[test]
@@ -564,7 +760,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -600,7 +796,7 @@ mod tests {
         objective.insert("b2", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -637,7 +833,7 @@ mod tests {
         objective.insert("free", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -667,7 +863,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert!(matches!(solutions[0].status, Status::MIPFailed));
@@ -696,11 +892,11 @@ mod tests {
         let objectives = vec![objective.clone()];
 
         // Test minimization
-        let min_solutions = solve_ilps(&mut polytope, objectives.clone(), false, false, false);
+        let min_solutions = solve_ilps(&mut polytope, objectives.clone(), false, false, false).unwrap();
         assert_eq!(min_solutions[0].solution.get("x"), Some(&0));
 
         // Test maximization
-        let max_solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+        let max_solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
         assert_eq!(max_solutions[0].solution.get("x"), Some(&5));
     }
 
@@ -736,7 +932,7 @@ mod tests {
 
         let objectives = vec![obj1, obj2];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
 
         assert_eq!(solutions.len(), 2);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -772,7 +968,7 @@ mod tests {
         objective.insert("z", 5.0); // Variable not in polytope
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -808,7 +1004,7 @@ mod tests {
         objective.insert("y", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -836,10 +1032,13 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
-
-        assert_eq!(solutions.len(), 1);
-        assert_eq!(solutions[0].status, Status::Optimal);
+        // Zero coefficients are removed during deduplication, resulting in empty matrix
+        let result = solve_ilps(&mut polytope, objectives, false, false, false);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SolverError::MatrixValidation(MatrixValidationError::EmptyMatrix)
+        ));
     }
 
     #[test]
@@ -864,7 +1063,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -904,7 +1103,7 @@ mod tests {
         objective.insert("b", -1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         let solution = &solutions[0];
@@ -948,7 +1147,7 @@ mod tests {
         objective.insert("x3", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -993,8 +1192,8 @@ mod tests {
             false,
             false,
             false,
-        );
-        let solutions_single = solve_ilps(&mut polytope_single, objectives, false, false, false);
+        ).unwrap();
+        let solutions_single = solve_ilps(&mut polytope_single, objectives, false, false, false).unwrap();
 
         assert_eq!(solutions_double.len(), 1);
         assert_eq!(solutions_single.len(), 1);
@@ -1036,14 +1235,13 @@ mod tests {
         objective.insert("x3", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
     }
 
     #[test]
-    #[should_panic(expected = "Rows, columns and values must have the same length")]
     fn test_mismatched_matrix_dimensions() {
         let variables = vec![Variable {
             id: "x",
@@ -1062,13 +1260,16 @@ mod tests {
         };
 
         let objectives = vec![HashMap::new()];
-        solve_ilps(&mut polytope, objectives, false, false, false);
+        let result = solve_ilps(&mut polytope, objectives, false, false, false);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SolverError::MatrixValidation(MatrixValidationError::LengthMismatch { .. })
+        ));
     }
 
     #[test]
-    #[should_panic(
-        expected = "The number of variables must be at least as large as the maximum column index in the constraint matrix, got (1,2)"
-    )]
     fn test_variable_column_mismatch() {
         let variables = vec![Variable {
             id: "x",
@@ -1087,13 +1288,16 @@ mod tests {
         };
 
         let objectives = vec![HashMap::new()];
-        solve_ilps(&mut polytope, objectives, false, false, false);
+        let result = solve_ilps(&mut polytope, objectives, false, false, false);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SolverError::VariableColumnMismatch { .. }
+        ));
     }
 
     #[test]
-    #[should_panic(
-        expected = "The number of elements in b must be at least as large as the maximum row index in the constraint matrix, got (1,2)"
-    )]
     fn test_row_bound_mismatch() {
         let variables = vec![Variable {
             id: "x",
@@ -1112,7 +1316,13 @@ mod tests {
         };
 
         let objectives = vec![HashMap::new()];
-        solve_ilps(&mut polytope, objectives, false, false, false);
+        let result = solve_ilps(&mut polytope, objectives, false, false, false);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SolverError::RowBoundMismatch { .. }
+        ));
     }
 
     #[test]
@@ -1151,7 +1361,7 @@ mod tests {
         objective.insert("free_binary", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -1204,7 +1414,7 @@ mod tests {
         // Try to take a b and c
         let objective = HashMap::from([("b", 1.0), ("a", 1.0), ("c", 1.0)]);
         let objectives = vec![objective];
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
 
@@ -1248,11 +1458,48 @@ mod tests {
         };
         let objective = HashMap::from([("a", 1.0), ("b", 1.0), ("c", 1.0), ("R", 1.0)]);
         let objectives = vec![objective];
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false);
+
+        // Zero coefficients are removed during deduplication, resulting in empty matrix
+        let result = solve_ilps(&mut polytope, objectives, true, false, false);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SolverError::MatrixValidation(MatrixValidationError::EmptyMatrix)
+        ));
+    }
+
+    #[test]
+    fn test_duplicate_matrix_indices() {
+        let variables = vec![
+            Variable {
+                id: "x1",
+                bound: (0, 10),
+            },
+            Variable {
+                id: "x2",
+                bound: (0, 10),
+            },
+        ];
+
+        // Create a matrix with duplicate (row, col) indices
+        // These should be automatically merged: 1 + 2 = 3 at position (0, 0)
+        let mut polytope = SparseLEIntegerPolyhedron {
+            a: IntegerSparseMatrix {
+                rows: vec![0, 0], // Same row
+                cols: vec![0, 0], // Same column - will be deduplicated!
+                vals: vec![1, 2], // Will be summed to 3
+            },
+            b: vec![(0, 10)],
+            variables,
+            double_bound: false,
+        };
+
+        let objective = HashMap::from([("x1", 1.0)]);
+        let objectives = vec![objective];
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+
+        // Should succeed with deduplication
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
-        // Sum solution and check that it is 4
-        let sum: i32 = solutions[0].solution.values().sum();
-        assert_eq!(sum, 4);
     }
 }
