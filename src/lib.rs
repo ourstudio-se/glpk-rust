@@ -620,6 +620,7 @@ pub fn solve_ilps<'a>(
 
         // Clean up
         glpk::glp_delete_prob(lp);
+        glpk::glp_free_env();
 
         Ok(solutions)
     }

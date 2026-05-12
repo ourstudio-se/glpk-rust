@@ -404,6 +404,7 @@ pub struct glp_iocp {
     pub save_sol: *const c_char,
     pub alien: c_int,
     pub flip: c_int,
+    pub foo_bar: [c_double; 23],
 }
 
 impl Default for glp_iocp {
@@ -431,6 +432,7 @@ extern "C" {
     pub fn glp_mip_obj_val(lp: *mut glp_prob) -> c_double;
     pub fn glp_mip_col_val(lp: *mut glp_prob, j: c_int) -> c_double;
     pub fn glp_term_out(flag: c_int) -> c_int;
+    pub fn glp_free_env() -> c_int;
 }
 "#;
 
