@@ -13,6 +13,7 @@ mod glpk {
 use libc::c_int;
 use std::collections::HashMap;
 use std::fmt;
+use std::time::{Duration, Instant};
 
 pub type Bound = (i32, i32);
 pub type ID<'a> = &'a str;
@@ -46,6 +47,9 @@ pub mod glp_consts {
     pub const GLP_NOFEAS: i32 = 4;
     pub const GLP_OPT: i32 = 5;
     pub const GLP_UNBND: i32 = 6;
+
+    // Solver return codes (glpk.h)
+    pub const GLP_ETMLIM: i32 = 0x09; // time limit exceeded
 }
 
 #[derive(Debug, PartialEq)]
@@ -219,6 +223,8 @@ pub enum SolverError {
     },
     /// Unknown solver status code
     UnknownStatus(i32),
+    /// Solver time limit exceeded (or the remaining budget was already 0)
+    TimeLimitExceeded,
 }
 
 impl fmt::Display for SolverError {
@@ -236,6 +242,9 @@ impl fmt::Display for SolverError {
             }
             SolverError::UnknownStatus(code) => {
                 write!(f, "Unknown solver status code: {}", code)
+            }
+            SolverError::TimeLimitExceeded => {
+                write!(f, "Solver time limit exceeded")
             }
         }
     }
@@ -318,6 +327,30 @@ pub fn validate_and_deduplicate_matrix(
     Ok((clean_rows, clean_cols, clean_vals))
 }
 
+/// Returns remaining time to deadline in milliseconds.
+/// If the deadline is in the past, returns a negative value.
+/// If the deadline is None, returns `i32::MAX`.
+fn calculate_remaining_time(deadline: Option<Instant>) -> i32 {
+    let Some(deadline) = deadline else {
+        return i32::MAX;
+    };
+    let now = Instant::now();
+    if deadline > now {
+        deadline.duration_since(now).as_millis().min(i32::MAX as u128) as i32
+    } else {
+        let overdue = now.duration_since(deadline).as_millis().min(i32::MAX as u128) as i32;
+        -overdue
+    }
+}
+
+fn handle_time_limit_exceeded(lp: *mut glpk::glp_prob) -> SolverError {
+    unsafe {
+        glpk::glp_delete_prob(lp);
+        glpk::glp_free_env();
+    }
+    SolverError::TimeLimitExceeded
+}
+
 // 1    GLP_FR      Free variable (−∞ < x < ∞)
 // 2    GLP_LO      Variable with lower bound (x ≥ l)
 // 3    GLP_UP      Variable with upper bound (x ≤ u)
@@ -349,6 +382,9 @@ pub fn validate_and_deduplicate_matrix(
 /// * `polytope` - A reference to a `Polytope` struct that defines the constraints and variables of the ILP.
 /// * `objectives` - A vector of `Objective` structs that define the objective functions to be optimized.
 /// * `term_out` - A boolean flag indicating whether to enable terminal output for the GLPK solver.
+/// * `time_limit_ms` - Optional total wall-time budget in milliseconds for this call
+///   (all objectives). `None` is unbounded. `Some(0)` returns `TimeLimitExceeded`
+///   without calling the solver.
 ///
 /// # Returns
 ///
@@ -366,6 +402,7 @@ pub fn validate_and_deduplicate_matrix(
 /// * The number of bounds doesn't match the maximum row index (`SolverError::RowBoundMismatch`)
 /// * An unknown solver status is encountered (`SolverError::UnknownStatus`)
 /// * Matrix validation fails due to invalid indices (`SolverError::MatrixValidation`)
+/// * The time budget is exhausted (`SolverError::TimeLimitExceeded`)
 ///
 /// # Examples
 ///
@@ -394,7 +431,7 @@ pub fn validate_and_deduplicate_matrix(
 /// objective.insert("x2", 1.0);
 /// let objectives = vec![objective];
 ///
-/// let solutions = solve_ilps(&mut polytope, objectives, false, false, false)?;
+/// let solutions = solve_ilps(&mut polytope, objectives, false, false, false, None)?;
 /// for solution in solutions {
 ///     println!("{:?}", solution);
 /// }
@@ -406,6 +443,7 @@ pub fn solve_ilps<'a>(
     maximize: bool,
     presolve: bool,
     term_out: bool,
+    time_limit_ms: Option<u32>,
 ) -> Result<Vec<Solution>, SolverError> {
     // Initialize an empty vector to store solutions
     let mut solutions: Vec<Solution> = Vec::new();
@@ -449,6 +487,12 @@ pub fn solve_ilps<'a>(
             max_row_index: max_row_idx,
         });
     }
+
+    let deadline = match time_limit_ms {
+        Some(0) => return Err(SolverError::TimeLimitExceeded),
+        Some(n) => Some(Instant::now() + Duration::from_millis(n as u64)),
+        None => None,
+    };
 
     unsafe {
         // Enable or disable terminal output
@@ -546,11 +590,19 @@ pub fn solve_ilps<'a>(
             }
 
             // First, solve the LP relaxation to provide an initial basis for the MIP solver
+            let remaining_time = calculate_remaining_time(deadline);
+            if remaining_time <= 0 {
+                return Err(handle_time_limit_exceeded(lp));
+            }
             let mut simplex_params = glpk::glp_smcp::default();
             glpk::glp_init_smcp(&mut simplex_params);
             simplex_params.msg_lev = if term_out { 3 } else { 0 };
+            simplex_params.tm_lim = remaining_time;
 
             let simplex_ret = glpk::glp_simplex(lp, &simplex_params);
+            if simplex_ret == glp_consts::GLP_ETMLIM {
+                return Err(handle_time_limit_exceeded(lp));
+            }
             if simplex_ret != 0 {
                 solution.status = Status::SimplexFailed;
                 solution.error = Some(format!(
@@ -562,12 +614,20 @@ pub fn solve_ilps<'a>(
             }
 
             // Now solve the integer problem using the LP relaxation basis
+            let remaining_time = calculate_remaining_time(deadline);
+            if remaining_time <= 0 {
+                return Err(handle_time_limit_exceeded(lp));
+            }
             let mut mip_params = glpk::glp_iocp::default();
             glpk::glp_init_iocp(&mut mip_params);
             mip_params.presolve = if presolve { 1 } else { 0 };
             mip_params.msg_lev = if term_out { 3 } else { 0 };
+            mip_params.tm_lim = remaining_time;
             let mip_ret = glpk::glp_intopt(lp, &mip_params);
 
+            if mip_ret == glp_consts::GLP_ETMLIM {
+                return Err(handle_time_limit_exceeded(lp));
+            }
             if mip_ret != 0 {
                 solution.status = Status::MIPFailed;
                 solution.error = Some(format!("GLPK MIP solver failed with code: {}", mip_ret));
@@ -708,7 +768,7 @@ mod tests {
             ("x2", 1.0),
             ("x3", 1.0),
         ])];
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         let solution = &solutions[0];
@@ -733,7 +793,7 @@ mod tests {
         };
 
         let objectives = vec![HashMap::new()];
-        let result = solve_ilps(&mut polytope, objectives, false, false, false);
+        let result = solve_ilps(&mut polytope, objectives, false, false, false, None);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), SolverError::EmptyConstraintMatrix));
@@ -761,7 +821,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -797,7 +857,7 @@ mod tests {
         objective.insert("b2", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -834,7 +894,7 @@ mod tests {
         objective.insert("free", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -864,7 +924,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert!(matches!(solutions[0].status, Status::MIPFailed));
@@ -893,11 +953,11 @@ mod tests {
         let objectives = vec![objective.clone()];
 
         // Test minimization
-        let min_solutions = solve_ilps(&mut polytope, objectives.clone(), false, false, false).unwrap();
+        let min_solutions = solve_ilps(&mut polytope, objectives.clone(), false, false, false, None).unwrap();
         assert_eq!(min_solutions[0].solution.get("x"), Some(&0));
 
         // Test maximization
-        let max_solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let max_solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
         assert_eq!(max_solutions[0].solution.get("x"), Some(&5));
     }
 
@@ -933,7 +993,7 @@ mod tests {
 
         let objectives = vec![obj1, obj2];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 2);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -969,7 +1029,7 @@ mod tests {
         objective.insert("z", 5.0); // Variable not in polytope
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -1005,7 +1065,7 @@ mod tests {
         objective.insert("y", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -1034,7 +1094,7 @@ mod tests {
         let objectives = vec![objective];
 
         // Zero coefficients are removed during deduplication, resulting in empty matrix
-        let result = solve_ilps(&mut polytope, objectives, false, false, false);
+        let result = solve_ilps(&mut polytope, objectives, false, false, false, None);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -1064,7 +1124,7 @@ mod tests {
         objective.insert("x", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -1104,7 +1164,7 @@ mod tests {
         objective.insert("b", -1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         let solution = &solutions[0];
@@ -1148,7 +1208,7 @@ mod tests {
         objective.insert("x3", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -1193,8 +1253,9 @@ mod tests {
             false,
             false,
             false,
+            None,
         ).unwrap();
-        let solutions_single = solve_ilps(&mut polytope_single, objectives, false, false, false).unwrap();
+        let solutions_single = solve_ilps(&mut polytope_single, objectives, false, false, false, None).unwrap();
 
         assert_eq!(solutions_double.len(), 1);
         assert_eq!(solutions_single.len(), 1);
@@ -1236,7 +1297,7 @@ mod tests {
         objective.insert("x3", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, false, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, false, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -1261,7 +1322,7 @@ mod tests {
         };
 
         let objectives = vec![HashMap::new()];
-        let result = solve_ilps(&mut polytope, objectives, false, false, false);
+        let result = solve_ilps(&mut polytope, objectives, false, false, false, None);
 
         assert!(result.is_err());
         assert!(matches!(
@@ -1289,7 +1350,7 @@ mod tests {
         };
 
         let objectives = vec![HashMap::new()];
-        let result = solve_ilps(&mut polytope, objectives, false, false, false);
+        let result = solve_ilps(&mut polytope, objectives, false, false, false, None);
 
         assert!(result.is_err());
         assert!(matches!(
@@ -1317,7 +1378,7 @@ mod tests {
         };
 
         let objectives = vec![HashMap::new()];
-        let result = solve_ilps(&mut polytope, objectives, false, false, false);
+        let result = solve_ilps(&mut polytope, objectives, false, false, false, None);
 
         assert!(result.is_err());
         assert!(matches!(
@@ -1362,7 +1423,7 @@ mod tests {
         objective.insert("free_binary", 1.0);
         let objectives = vec![objective];
 
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
 
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
@@ -1415,7 +1476,7 @@ mod tests {
         // Try to take a b and c
         let objective = HashMap::from([("b", 1.0), ("a", 1.0), ("c", 1.0)]);
         let objectives = vec![objective];
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
 
@@ -1461,7 +1522,7 @@ mod tests {
         let objectives = vec![objective];
 
         // Zero coefficients are removed during deduplication, resulting in empty matrix
-        let result = solve_ilps(&mut polytope, objectives, true, false, false);
+        let result = solve_ilps(&mut polytope, objectives, true, false, false, None);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -1497,10 +1558,90 @@ mod tests {
 
         let objective = HashMap::from([("x1", 1.0)]);
         let objectives = vec![objective];
-        let solutions = solve_ilps(&mut polytope, objectives, true, false, false).unwrap();
+        let solutions = solve_ilps(&mut polytope, objectives, true, false, false, None).unwrap();
 
         // Should succeed with deduplication
         assert_eq!(solutions.len(), 1);
         assert_eq!(solutions[0].status, Status::Optimal);
+    }
+
+    fn tiny_polytope() -> SparseLEIntegerPolyhedron<'static> {
+        SparseLEIntegerPolyhedron {
+            a: IntegerSparseMatrix {
+                rows: vec![0],
+                cols: vec![0],
+                vals: vec![1],
+            },
+            b: vec![(0, 5)],
+            variables: vec![Variable {
+                id: "x",
+                bound: (0, 10),
+            }],
+            double_bound: true,
+        }
+    }
+
+    #[test]
+    fn test_zero_time_limit_exceeds_time_limit() {
+        let mut polytope = tiny_polytope();
+        let mut objective = HashMap::new();
+        objective.insert("x", 1.0);
+        let time_limit = Some(0);
+
+        
+        let result = solve_ilps(
+            &mut polytope,
+            vec![objective],
+            false,
+            false,
+            false,
+            time_limit,
+        );
+
+        assert!(matches!(result, Err(SolverError::TimeLimitExceeded)));
+    }
+
+    #[test]
+    fn test_no_time_limit_with_two_objectives_does_not_exceed_time_limit() {
+        let mut polytope = tiny_polytope();
+        let mut objective = HashMap::new();
+        objective.insert("x", 1.0);
+        let mut obj2 = HashMap::new();
+        obj2.insert("x", -1.0);
+
+        let result = solve_ilps(
+            &mut polytope,
+            vec![objective, obj2],
+            false,
+            false,
+            false,
+            None,
+        );
+        
+        assert!(!matches!(result, Err(SolverError::TimeLimitExceeded)));
+    }
+
+    #[test]
+    fn test_calculate_remaining_time_none_is_unlimited() {
+        let remaining_time = calculate_remaining_time(None);
+        assert_eq!(remaining_time, i32::MAX);
+    }
+
+    #[test]
+    fn test_calculate_remaining_time_past_deadline_is_negative() {
+        let deadline = Instant::now() - Duration::from_millis(50);
+
+        let remaining_time = calculate_remaining_time(Some(deadline));
+        
+        assert!(remaining_time < 0);
+    }
+
+    #[test]
+    fn test_calculate_remaining_time_future_deadline_is_positive() {
+        let deadline = Instant::now() + Duration::from_millis(50);
+
+        let remaining_time = calculate_remaining_time(Some(deadline));
+
+        assert!(remaining_time > 0);
     }
 }
