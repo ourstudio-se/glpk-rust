@@ -42,7 +42,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-glpk-rust = "0.2.2"
+glpk-rust = "0.3.0"
 ```
 
 ## Example
