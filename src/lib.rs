@@ -343,6 +343,14 @@ fn calculate_remaining_time(deadline: Option<Instant>) -> i32 {
     }
 }
 
+fn handle_time_limit_exceeded(lp: *mut glpk::glp_prob) -> SolverError {
+    unsafe {
+        glpk::glp_delete_prob(lp);
+        glpk::glp_free_env();
+    }
+    SolverError::TimeLimitExceeded
+}
+
 // 1    GLP_FR      Free variable (−∞ < x < ∞)
 // 2    GLP_LO      Variable with lower bound (x ≥ l)
 // 3    GLP_UP      Variable with upper bound (x ≤ u)
@@ -584,9 +592,7 @@ pub fn solve_ilps<'a>(
             // First, solve the LP relaxation to provide an initial basis for the MIP solver
             let remaining_time = calculate_remaining_time(deadline);
             if remaining_time <= 0 {
-                glpk::glp_delete_prob(lp);
-                glpk::glp_free_env();
-                return Err(SolverError::TimeLimitExceeded);
+                return Err(handle_time_limit_exceeded(lp));
             }
             let mut simplex_params = glpk::glp_smcp::default();
             glpk::glp_init_smcp(&mut simplex_params);
@@ -595,9 +601,7 @@ pub fn solve_ilps<'a>(
 
             let simplex_ret = glpk::glp_simplex(lp, &simplex_params);
             if simplex_ret == glp_consts::GLP_ETMLIM {
-                glpk::glp_delete_prob(lp);
-                glpk::glp_free_env();
-                return Err(SolverError::TimeLimitExceeded);
+                return Err(handle_time_limit_exceeded(lp));
             }
             if simplex_ret != 0 {
                 solution.status = Status::SimplexFailed;
@@ -612,9 +616,7 @@ pub fn solve_ilps<'a>(
             // Now solve the integer problem using the LP relaxation basis
             let remaining_time = calculate_remaining_time(deadline);
             if remaining_time <= 0 {
-                glpk::glp_delete_prob(lp);
-                glpk::glp_free_env();
-                return Err(SolverError::TimeLimitExceeded);
+                return Err(handle_time_limit_exceeded(lp));
             }
             let mut mip_params = glpk::glp_iocp::default();
             glpk::glp_init_iocp(&mut mip_params);
@@ -624,9 +626,7 @@ pub fn solve_ilps<'a>(
             let mip_ret = glpk::glp_intopt(lp, &mip_params);
 
             if mip_ret == glp_consts::GLP_ETMLIM {
-                glpk::glp_delete_prob(lp);
-                glpk::glp_free_env();
-                return Err(SolverError::TimeLimitExceeded);
+                return Err(handle_time_limit_exceeded(lp));
             }
             if mip_ret != 0 {
                 solution.status = Status::MIPFailed;
