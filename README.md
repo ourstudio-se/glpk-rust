@@ -42,7 +42,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-glpk-rust = "0.1.0"
+glpk-rust = "0.2.2"
 ```
 
 ## Example
@@ -61,7 +61,7 @@ let variables = vec![
 let mut polytope = SparseLEIntegerPolyhedron {
     A: IntegerSparseMatrix {
         rows: vec![0, 1],
-        cols: vec![0, 1], 
+        cols: vec![0, 1],
         vals: vec![1, 1],
         shape: Shape { nrows: 2, ncols: 2 },
     },
@@ -75,7 +75,8 @@ let mut objective = HashMap::new();
 objective.insert("x1", 1.0);
 objective.insert("x2", 1.0);
 
-// Solve
-let solutions = solve_ilps(&mut polytope, vec![objective], false, false);
+// Solve. The last argument is an optional total time limit in milliseconds
+// for all objectives (`None` = unlimited).
+let solutions = solve_ilps(&mut polytope, vec![objective], false, false, false, None);
 println!("{:?}", solutions);
 ```
