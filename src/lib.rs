@@ -1565,7 +1565,7 @@ mod tests {
         assert_eq!(solutions[0].status, Status::Optimal);
     }
 
-    fn tiny_polytope() -> SparseLEIntegerPolyhedron<'static> {
+    fn stub_polytope() -> SparseLEIntegerPolyhedron<'static> {
         SparseLEIntegerPolyhedron {
             a: IntegerSparseMatrix {
                 rows: vec![0],
@@ -1583,7 +1583,7 @@ mod tests {
 
     #[test]
     fn test_zero_time_limit_exceeds_time_limit() {
-        let mut polytope = tiny_polytope();
+        let mut polytope = stub_polytope();
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         let time_limit = Some(0);
@@ -1602,8 +1602,8 @@ mod tests {
     }
 
     #[test]
-    fn test_no_time_limit_with_two_objectives_does_not_exceed_time_limit() {
-        let mut polytope = tiny_polytope();
+    fn test_no_time_limit_is_not_exceeded() {
+        let mut polytope = stub_polytope();
         let mut objective = HashMap::new();
         objective.insert("x", 1.0);
         let mut obj2 = HashMap::new();
@@ -1616,6 +1616,27 @@ mod tests {
             false,
             false,
             None,
+        );
+        
+        assert!(!matches!(result, Err(SolverError::TimeLimitExceeded)));
+    }
+
+    #[test]
+    fn test_long_time_limit_is_not_exceeded() {
+        let mut polytope = stub_polytope();
+        let mut objective = HashMap::new();
+        objective.insert("x", 1.0);
+        let mut obj2 = HashMap::new();
+        obj2.insert("x", -1.0);
+        let time_limit = Some(1000);
+
+        let result = solve_ilps(
+            &mut polytope,
+            vec![objective, obj2],
+            false,
+            false,
+            false,
+            time_limit,
         );
         
         assert!(!matches!(result, Err(SolverError::TimeLimitExceeded)));

@@ -75,8 +75,14 @@ let mut objective = HashMap::new();
 objective.insert("x1", 1.0);
 objective.insert("x2", 1.0);
 
-// Solve. The last argument is an optional total time limit in milliseconds
-// for all objectives (`None` = unlimited).
-let solutions = solve_ilps(&mut polytope, vec![objective], false, false, false, None);
+// Solve.
+let solutions = solve_ilps(
+    &mut polytope, 
+    vec![objective], 
+    false, 
+    false, 
+    false, 
+    None, // time-limit (optional)
+);
 println!("{:?}", solutions);
 ```
